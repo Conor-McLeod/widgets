@@ -1,0 +1,108 @@
+---
+/**
+ * Bridge between MDX pages and framework-agnostic widgets.
+ *
+ *   <Widget src="explorer" />           -> src/explorations/<current slug>/explorer/index.ts
+ *   <Widget src="float64/explorer" />   -> explicit exploration (for reuse across pages)
+ *
+ * The widget module is lazy-loaded when it scrolls near the viewport and its
+ * `mount(el)` is called. Astro never needs to know which framework it uses.
+ */
+interface Props {
+  src: string;
+  /** Minimum height in px, reserved before the widget mounts (avoids layout jump). */
+  height?: number;
+  /** Fill the whole viewport (used by the bare /w/ route). */
+  fill?: boolean;
+  caption?: string;
+}
+
+const { src, height = 240, fill = false, caption } = Astro.props;
+const id = src.includes('/') ? src : `${Astro.params.slug}/${src}`;
+---
+
+<figure class:list={['widget', { fill }]}>
+  <div
+    class="widget-mount"
+    data-widget={id}
+    style={fill ? undefined : `min-height: ${height}px`}
+  >
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+  {!fill && <a class="widget-pop" href={`/w/${id}`} title="Open on its own">↗</a>}
+</figure>
+
+<script>
+  import type { Mount } from '../widget';
+
+  const modules = import.meta.glob<{ mount: Mount }>('/src/explorations/*/*/index.ts');
+
+  async function load(el: HTMLElement) {
+    const id = el.dataset.widget!;
+    const importer = modules[`/src/explorations/${id}/index.ts`];
+    if (!importer) {
+      el.innerHTML = `<p class="widget-error">No widget at <code>src/explorations/${id}/index.ts</code></p>`;
+      return;
+    }
+    try {
+      const { mount } = await importer();
+      mount(el);
+    } catch (err) {
+      console.error(`[widget ${id}]`, err);
+      el.innerHTML = `<p class="widget-error">Widget <code>${id}</code> failed to mount: ${String(err)}</p>`;
+    }
+  }
+
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        io.unobserve(entry.target);
+        load(entry.target as HTMLElement);
+      }
+    },
+    { rootMargin: '300px' },
+  );
+
+  document.querySelectorAll<HTMLElement>('[data-widget]').forEach((el) => io.observe(el));
+</script>
+
+<style>
+  .widget {
+    position: relative;
+    margin: 1.75rem 0;
+    padding: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+  }
+  .widget.fill {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    min-height: 100dvh;
+  }
+  figcaption {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .widget-pop {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+    text-decoration: none;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .widget:hover .widget-pop,
+  .widget-pop:focus-visible {
+    opacity: 1;
+  }
+  .widget-mount :global(.widget-error) {
+    color: var(--danger);
+    font-size: 0.9rem;
+  }
+</style>

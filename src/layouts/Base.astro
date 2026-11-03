@@ -1,0 +1,104 @@
+---
+interface Props {
+  title: string;
+  /** Bare pages (single widget) drop the header and page padding. */
+  bare?: boolean;
+}
+
+const { title, bare = false } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+  </head>
+  <body class:list={{ bare }}>
+    {
+      !bare && (
+        <header class="site">
+          <a href="/">widgets</a>
+        </header>
+      )
+    }
+    <slot />
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    --bg: #fbfaf7;
+    --surface: #ffffff;
+    --text: #1d1c1a;
+    --muted: #6b6862;
+    --border: #e4e1da;
+    --accent: #2f5fd0;
+    --accent-soft: #e7edfb;
+    --danger: #b3261e;
+    --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514;
+      --surface: #1d1d1b;
+      --text: #ebe8e2;
+      --muted: #9a968e;
+      --border: #33322f;
+      --accent: #8aa9ff;
+      --accent-soft: #232c45;
+      --danger: #ff8a80;
+    }
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a {
+    color: var(--accent);
+  }
+  code,
+  pre {
+    font-family: var(--mono);
+    font-size: 0.9em;
+  }
+  header.site {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 1.25rem 16px 0;
+  }
+  header.site a {
+    color: var(--muted);
+    text-decoration: none;
+    font-family: var(--mono);
+    font-size: 0.9rem;
+  }
+  .tag {
+    display: inline-block;
+    padding: 0.05rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    background: transparent;
+    text-decoration: none;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .tag[aria-pressed='true'] {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+</style>

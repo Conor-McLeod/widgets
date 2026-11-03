@@ -1,0 +1,167 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '~/layouts/Base.astro';
+
+const entries = (await getCollection('explorations', (e) => import.meta.env.DEV || !e.data.draft)).sort(
+  (a, b) => b.data.date.getTime() - a.data.date.getTime(),
+);
+
+const counts = new Map<string, number>();
+for (const e of entries) for (const t of e.data.tags) counts.set(t, (counts.get(t) ?? 0) + 1);
+const tags = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+const fmt = new Intl.DateTimeFormat('en', { year: 'numeric', month: 'short', day: 'numeric' });
+---
+
+<Base title="widgets">
+  <main>
+    <h1>Explorations</h1>
+    <p class="lede">Interactive widgets for poking at ideas, with notes.</p>
+
+    <nav class="tags" aria-label="Filter by tag">
+      {tags.map(([t, n]) => <button class="tag" data-tag={t} aria-pressed="false">{t} <span>{n}</span></button>)}
+    </nav>
+
+    <ul class="cards">
+      {
+        entries.map((e) => (
+          <li data-tags={e.data.tags.join(' ')}>
+            <a href={`/${e.id}`}>
+              <time datetime={e.data.date.toISOString()}>{fmt.format(e.data.date)}</time>
+              <h2>
+                {e.data.title}
+                {e.data.draft && <em class="draft">draft</em>}
+              </h2>
+              <p>{e.data.summary}</p>
+            </a>
+            <div class="card-tags">
+              {e.data.tags.map((t) => <span class="tag">{t}</span>)}
+            </div>
+          </li>
+        ))
+      }
+    </ul>
+    <p class="empty" hidden>Nothing matches every selected tag.</p>
+  </main>
+</Base>
+
+<script>
+  // Selected tags live in ?tags=a,b so filtered views are bookmarkable. A card shows when it has every selected tag.
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>('nav.tags button')];
+  const cards = [...document.querySelectorAll<HTMLElement>('ul.cards > li')];
+  const empty = document.querySelector<HTMLElement>('.empty')!;
+
+  const selected = new Set(new URLSearchParams(location.search).get('tags')?.split(',').filter(Boolean) ?? []);
+
+  function apply() {
+    for (const b of buttons) b.setAttribute('aria-pressed', String(selected.has(b.dataset.tag!)));
+    let shown = 0;
+    for (const c of cards) {
+      const own = new Set(c.dataset.tags!.split(' '));
+      const visible = [...selected].every((t) => own.has(t));
+      c.hidden = !visible;
+      if (visible) shown++;
+    }
+    empty.hidden = shown > 0;
+    const url = new URL(location.href);
+    if (selected.size) url.searchParams.set('tags', [...selected].join(','));
+    else url.searchParams.delete('tags');
+    history.replaceState(null, '', url);
+  }
+
+  for (const b of buttons) {
+    b.addEventListener('click', () => {
+      const t = b.dataset.tag!;
+      selected.has(t) ? selected.delete(t) : selected.add(t);
+      apply();
+    });
+  }
+  apply();
+</script>
+
+<style>
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 1.5rem 16px 4rem;
+  }
+  h1 {
+    margin: 0;
+    font-size: 2rem;
+    letter-spacing: -0.02em;
+  }
+  .lede {
+    margin: 0.25rem 0 1.5rem;
+    color: var(--muted);
+  }
+  .tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 1.5rem;
+  }
+  .tags span {
+    opacity: 0.6;
+    margin-left: 0.15rem;
+  }
+  .cards {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+    gap: 1rem;
+  }
+  .cards li {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    transition: border-color 120ms;
+  }
+  .cards li:hover {
+    border-color: var(--accent);
+  }
+  .cards li[hidden] {
+    display: none;
+  }
+  .cards a {
+    flex: 1;
+    padding: 1rem 1rem 0.5rem;
+    color: inherit;
+    text-decoration: none;
+  }
+  time {
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  h2 {
+    margin: 0.15rem 0 0.4rem;
+    font-size: 1.1rem;
+    line-height: 1.3;
+  }
+  .draft {
+    margin-left: 0.4rem;
+    font-size: 0.7rem;
+    font-weight: normal;
+    color: var(--danger);
+  }
+  .cards p {
+    margin: 0;
+    font-size: 0.92rem;
+    color: var(--muted);
+  }
+  .card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    padding: 0 1rem 1rem;
+  }
+  .card-tags .tag {
+    cursor: default;
+  }
+  .empty {
+    color: var(--muted);
+  }
+</style>

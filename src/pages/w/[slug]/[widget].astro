@@ -1,0 +1,19 @@
+---
+// A single widget with no page around it: for iframes, screenshots, and focused fiddling.
+import Base from '~/layouts/Base.astro';
+import Widget from '~/components/Widget.astro';
+
+export function getStaticPaths() {
+  const entries = Object.keys(import.meta.glob('/src/explorations/*/*/index.ts'));
+  return entries.map((path) => {
+    const [, slug, widget] = path.match(/^\/src\/explorations\/([^/]+)\/([^/]+)\/index\.ts$/)!;
+    return { params: { slug, widget } };
+  });
+}
+
+const { slug, widget } = Astro.params;
+---
+
+<Base title={`${slug}/${widget}`} bare>
+  <Widget src={`${slug}/${widget}`} fill />
+</Base>

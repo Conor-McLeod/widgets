@@ -1,0 +1,74 @@
+---
+import { getCollection, render } from 'astro:content';
+import Base from '~/layouts/Base.astro';
+import Widget from '~/components/Widget.astro';
+
+export async function getStaticPaths() {
+  const entries = await getCollection('explorations');
+  return entries.map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
+}
+
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+const fmt = new Intl.DateTimeFormat('en', { year: 'numeric', month: 'long', day: 'numeric' });
+---
+
+<Base title={entry.data.title}>
+  <article>
+    <header>
+      <h1>{entry.data.title}</h1>
+      <p class="meta">
+        <time datetime={entry.data.date.toISOString()}>{fmt.format(entry.data.date)}</time>
+        {entry.data.tags.map((t) => <a class="tag" href={`/?tags=${encodeURIComponent(t)}`}>{t}</a>)}
+      </p>
+    </header>
+    {/* Widget is injected so MDX files can use <Widget> without importing it. */}
+    <Content components={{ Widget }} />
+  </article>
+</Base>
+
+<style>
+  article {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 1.5rem 16px 5rem;
+  }
+  h1 {
+    margin: 0;
+    font-size: 2rem;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.5rem 0 2rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .meta time {
+    margin-right: 0.4rem;
+  }
+  article :global(h2) {
+    margin-top: 2.5rem;
+    font-size: 1.35rem;
+  }
+  article :global(pre) {
+    padding: 0.9rem 1rem;
+    border-radius: 8px;
+    overflow-x: auto;
+  }
+  article :global(:not(pre) > code) {
+    padding: 0.1em 0.3em;
+    border-radius: 4px;
+    background: var(--accent-soft);
+  }
+  article :global(blockquote) {
+    margin: 1.5rem 0;
+    padding: 0.1rem 1rem;
+    border-left: 3px solid var(--accent);
+    color: var(--muted);
+  }
+</style>
