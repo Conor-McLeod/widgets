@@ -1,0 +1,127 @@
+---
+title: Inside NCCL
+summary: How NVIDIA's collective library frames bytes (Simple, LL, LL128), why each wins at a different message size, and how a Ring AllReduce is built from five primitives.
+date: 2026-11-04
+tags: [gpu, networking, machine-learning]
+draft: false
+---
+
+Every step of data-parallel training ends with the GPUs adding their gradients together, so that each one
+holds the same sum. That operation is an **AllReduce**, and on NVIDIA hardware it almost always goes through
+**NCCL** (the NVIDIA Collective Communication Library). NCCL is open source and its API is simple, but how it
+moves bytes is mostly undocumented. *Demystifying NCCL* (Hu, Shen et al., ETH Zürich, NVIDIA and Broadcom,
+[arXiv:2507.04786](https://arxiv.org/abs/2507.04786)) reads through the source of NCCL 2.19.1 and writes it
+down. The authors needed that detail for **ATLAHS**, a simulator that replays real training traces.
+
+This page covers three parts of the paper: the three wire **protocols**, how a collective's buffer is cut into
+**channels, loops and slots**, and the step-by-step **Ring AllReduce**.
+
+## Three ways to say "the data is here"
+
+Sending bytes to another GPU is the easy part. The hard part is the receiver knowing when they've all arrived.
+GPU memory writes can become visible out of order, so a receiver that sees new bytes can't assume the
+neighbouring bytes are there too. NCCL has three protocols that handle this differently:
+
+- **Simple** writes a chunk of plain data, issues a **memory fence** (wait until every earlier write is
+  visible), then bumps a counter. The receiver polls the counter. Almost every byte sent is data, but the fence
+  is slow. The paper's Table I gives roughly 6 µs per hop.
+- **LL** (low latency) puts a **flag** next to every 4 bytes of data and writes both with a single 8-byte
+  atomic store. An atomic store is never seen half-written, so if the flag is right the data is right too. No
+  fence is needed (about 1 µs per hop), but half of what's sent is flags.
+- **LL128** uses the same idea at 128 bytes: 120 bytes of data and an 8-byte flag in one 128-byte store. That's
+  93.75% data, and the paper puts the per-hop latency at about 2 µs. The catch is that the hardware must
+  guarantee 128-byte stores are never split or reordered. Where it can't, NCCL turns LL128 off.
+
+<Widget src="wire" height={640} />
+
+Press **send** and watch the three strips fill. One square is 8 bytes, and one square crosses the link per
+tick. Grey squares have arrived but can't be trusted yet. They turn blue once a flag or counter covers them.
+
+- At **64 B**, LL's first value is readable after one tick, and LL finishes well before Simple's fence does.
+- At **480 B**, LL needs twice as many ticks as the data alone, because it sends a flag for every 4 bytes.
+  LL128 reads in 128-byte lines and is far ahead.
+- Simple releases nothing until the very end, then everything at once. With realistic chunks of hundreds of
+  KiB the fence is a small cost. Here, at a few hundred bytes, it dominates.
+
+## Which protocol wins?
+
+The three protocols trade the same two things: a fixed cost per hop (<M t="\alpha" />) and the fraction of link
+bandwidth that carries data (<M t="\eta" />). The simplest model is
+
+<M block t="T(n) = \alpha + \frac{n}{\eta B}" />
+
+for an <M t="n" />-byte message over a link of bandwidth <M t="B" />. The chart below plugs in the paper's Table I
+numbers: <M t="\alpha" /> = 6, 1 and 2 µs, and <M t="\eta" /> = 100%, 25–50% and 95%. It plots the bandwidth each
+protocol actually achieves, <M t="n / T(n)" />.
+
+<Widget src="crossover" height={520} />
+
+Drag across the chart to read off times. The coloured strip at the bottom shows which protocol is fastest at
+each size.
+
+- Small messages are all latency, so LL wins. Big messages are all bandwidth, so Simple wins. LL128 takes the
+  large range in between.
+- Switch to the **inter-node** link. The crossovers move to smaller sizes: a slower link makes bandwidth matter
+  sooner.
+- Lower **LL efficiency** to 25%. That's closer to LL over a network, where its buffers have to sit in host
+  memory so the CPU can poll the flags. That rules out GPUDirect RDMA.
+- Untick **128-byte atomic stores**. Without LL128, the jump from LL to Simple is abrupt.
+
+This is a toy, and the paper deliberately doesn't use one. Its authors tried to bound runtimes with an
+<M t="\alpha" />–<M t="\beta" /> model and gave up: where the GPUs sit (four on one node or four on four nodes)
+changes too much. Their benchmarks on 16 GH200 nodes still show the same overall shape. Between nodes, LL and
+LL128 win below about 64 KiB and fall far behind Simple at gigabyte sizes. That's because a gigabyte over LL128
+means millions of flag checks across the network, and LL128 sometimes even trails LL there. Within a node,
+LL128 stays close to the best at every size and is only about 5% slower than Simple at the top. NCCL's tuner
+makes this choice for you. The paper's advice is to leave it alone unless you've measured.
+
+## Channels, loops and slots
+
+NCCL doesn't run a collective as one big transfer. It splits the buffer into **channels**, and each channel
+runs as its own CUDA block on its own SM. Each channel has a fixed-size buffer: 4 MiB for Simple, 256 KiB for
+LL, about 4.8 MiB for LL128. If a channel's share is bigger than its buffer, it loops over it one buffer at a
+time. Each loop is cut into **NCCL_STEPS = 8 slots**. The slots form a circular pipeline, so while one slot's
+chunk is on the wire, the next is being reduced and the one after that copied.
+
+<Widget src="partition" height={470} />
+
+- At 64 MiB on 8 channels with Simple, each channel runs 2 loops of 8 full 512 KiB chunks.
+- Switch to **LL**. A slot holds only 16 KiB of data (32 KiB including flags), so the same message takes 32
+  times as many steps. That's fine for small messages and a poor fit for big ones.
+- Shrink the message to 1 MiB and add channels. Each channel's share drops below the 512 KiB buffer the network
+  transport uses, so the proxy thread ends up sending partly filled buffers. More parallelism isn't free.
+
+That's a lot of parallelism. The paper stresses that NCCL never runs "one transfer": dozens of channels, each
+with 8 slots in flight and several warps handling different stages, run at once.
+
+## Ring AllReduce, one primitive at a time
+
+Within each loop, an algorithm decides who sends what to whom. NCCL builds every algorithm from a few
+**primitives** whose names say what they do: `send`, `recv`, and combinations like `recvReduceSend` (receive,
+add your own data, forward the result). In a ring of <M t="k" /> GPUs, each GPU splits its data into
+<M t="k" /> segments and the loop takes <M t="2k - 1" /> steps.
+
+<Widget src="ring" height={600} />
+
+Step through it with <M t="k = 4" />. The red outline is the segment each GPU receives (and passes on) at that
+step.
+
+- **Steps 0 to <M t="k-1" />** pass partial sums around the ring. Each GPU adds its own share before
+  forwarding, so after <M t="k - 1" /> hops every segment is complete on exactly one GPU. That GPU uses
+  `recvReduceCopySend` to also copy the result to its output buffer.
+- **Steps <M t="k" /> to <M t="2k-2" />** circulate the finished sums with `recvCopySend`. Nothing is added
+  any more, it's just copying. The last step is a plain `recv`.
+- Raise <M t="k" /> to 6. The amount each GPU sends barely changes, approaching <M t="2N" />, but the number of
+  sequential steps grows. That's why rings are the choice for big messages.
+
+For small messages NCCL prefers a **tree**. It uses a *double binary tree*: two trees over the nodes, arranged
+so that no node is an inner node in both, which keeps every node's links busy. Data is reduced up to the root
+with `send`, `recvReduceSend` and `recvReduceCopySend`, then broadcast back down with `recvCopySend` and `recv`.
+Inside a node the GPUs simply form a chain. A tree reaches everyone in about <M t="\log k" /> hops rather than
+<M t="k" />. The paper's benchmarks agree: Tree wins at small sizes, Ring at large ones.
+
+The paper also makes a distinction that matters for simulation. Ring AllReduce is **non-pipelined**: each GPU
+finishes every step of one loop before starting the next. Tree AllReduce, Ring Broadcast and Ring Reduce are
+**pipelined**: a GPU can start the next loop's chunk while later GPUs are still working on the previous one.
+Getting that distinction right is part of how ATLAHS keeps its simulated runtimes within about 5% of the real
+ones.
