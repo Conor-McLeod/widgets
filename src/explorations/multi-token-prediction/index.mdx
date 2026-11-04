@@ -1,0 +1,124 @@
+---
+title: Multi-token prediction
+summary: How DeepSeek-V3 and its successors train a small extra module to guess the token after next, and then use it to draft tokens for free at inference.
+date: 2026-11-04
+tags: [machine-learning, transformers, llm, inference]
+draft: false
+---
+
+A language model is trained to do one thing: given a prefix, predict the next token. Generation
+inherits that shape. One forward pass through every layer yields one token, then the model starts
+over. For a big model on a small batch, most of that pass is spent streaming weights from memory,
+so the GPU's arithmetic sits mostly idle and you pay full price for a single token.
+
+A growing set of open-weights models ship with something extra bolted on. DeepSeek-V3 and R1,
+GLM-4.5, Qwen3-Next and Xiaomi's MiMo all include one or more **multi-token prediction** (MTP)
+layers: a small extra stage trained to predict the token *after* the next one. It serves two
+purposes. During training it gives the model more to learn from each sequence. At inference it
+becomes a built-in draft model for speculative decoding, with nothing extra to train or host.
+
+## The architecture
+
+DeepSeek-V3's version is the one most others follow. The main model runs as usual and produces a
+hidden state <M t="h^0_i" /> at each position <M t="i" />, which the output head turns into a guess for
+token <M t="t_{i+1}" />. An MTP module then takes that hidden state, together with the embedding of the
+**true** next token, and runs one extra transformer block:
+
+<M block t="\begin{aligned} h'^{k}_i &= M_k \begin{bmatrix} \mathrm{RMSNorm}(h^{k-1}_i) \\ \mathrm{RMSNorm}(\mathrm{Emb}(t_{i+k})) \end{bmatrix} \\ h^k_i &= \mathrm{TRM}_k(h'^{k}_i) \\ P^k_{i+k+1} &= \mathrm{OutHead}(h^k_i) \end{aligned}" />
+
+The projection <M t="M_k" /> squashes the two concatenated vectors back to model width. The embedding
+table and output head are shared with the main model, so a module costs one transformer block plus
+that projection. In DeepSeek-V3 that's about 14B parameters on top of the 671B main model.
+Module <M t="k" /> feeds module <M t="k+1" />, so each prediction is still made one token at a time, with
+every earlier token in hand.
+
+<Widget src="chain" height={560} caption="Who predicts what in one training sequence. Each cell shows its target; chips show the true token a module is given." />
+
+Click a column. The main head at position 3 predicts *on*. Module 1 at the same position is told
+the answer, *on*, and predicts *the*. It's the main model's next-token problem shifted one step
+along, but working from the main model's hidden state and not from its own pass over the prefix.
+Notice the dashed cells in the right-hand columns: once the target would fall off the end of the
+sequence, the module has nothing to learn there.
+
+Now switch to **Parallel heads**. This is the earlier design from Meta's 2024 paper (Gloeckle et
+al.), which ran several independent heads off a shared trunk. Head 2 has to predict *mat* from
+position 3 without knowing *on* or *the*: it has to guess two words blind. DeepSeek's sequential
+chain keeps the causal order intact, which they argue makes each module's job easier and the
+drafts more accurate.
+
+### Why train with it?
+
+The training loss adds the modules' cross-entropy losses, scaled by a weight <M t="\lambda" />:
+
+<M block t="\mathcal{L} = \mathcal{L}_{\text{main}} + \frac{\lambda}{D} \sum_{k=1}^{D} \mathcal{L}_k" />
+
+DeepSeek-V3 used <M t="D = 1" /> and <M t="\lambda = 0.3" /> for the first 10T tokens, then 0.1 for the remaining
+4.8T. The counter under the widget shows the obvious effect: each sequence grades more predictions.
+The less obvious one is that the gradients from the modules flow back into <M t="h^0" />. The main model's
+hidden state is pushed to carry information about the token after next as well as the next one, a
+mild form of planning ahead. DeepSeek's ablations found this improved benchmark scores even with the
+module thrown away afterwards.
+
+## Using it at inference: self-speculative decoding
+
+Throwing the module away is an option, but it would waste a well-trained draft model. The trick
+rests on one fact about the main model. A forward pass that scores several tokens at once costs
+about the same as one that scores a single token, because both are dominated by reading the
+weights. So:
+
+1. After a pass, run the MTP module on the new hidden state to draft the next token (or chain it to
+   draft several).
+2. On the next pass, feed the main model the token it just produced *plus* the drafts. In one pass
+   it computes its own prediction at every one of those positions.
+3. Keep drafts for as long as they match what the main model would have said. At the first mismatch,
+   discard the rest and take the main model's own token there.
+
+Every pass yields at least one token, the same one plain decoding would have produced, and each
+accepted draft is a bonus. With greedy decoding the output is identical to running without
+speculation. With sampling, a rejection-sampling acceptance rule keeps the output distribution exactly
+the same.
+
+<Widget src="decode" height={520} caption="Greedy self-speculative decoding on a toy text. Acceptance is simulated with the probabilities set below." />
+
+Start with <M t="k = 1" />, which is how DeepSeek-V3 is deployed, and press **+200** a few times. Tokens per
+pass settles near <M t="1 + a" />. DeepSeek reports that its MTP module's draft is accepted 85–90% of the
+time, which gives the 1.8× generation speedup they quote. Set <M t="k = 0" /> to see plain decoding: one
+token per pass, no matter what.
+
+Inference engines such as vLLM and SGLang let you chain the module to draft several tokens per pass.
+The module was only trained to look one step ahead, though, so from the second draft on it is
+working from its own output, and accuracy falls with each step. The decay <M t="r" /> models that. Push
+<M t="k" /> to 4 and watch how often a pass ends on a rejection, with the drafts after it thrown out
+unused.
+
+## How deep should you draft?
+
+Each draft isn't free. The MTP module has to run once per draft, one after another, and verifying
+more positions adds a little work to the main pass. If draft <M t="j" /> is accepted with probability
+<M t="a\,r^{\,j-1}" /> given that everything before it was, the expected tokens per pass and the speedup
+are
+
+<M block t="E(k) = 1 + \sum_{j=1}^{k} \prod_{m=1}^{j} a\, r^{\,m-1}, \qquad \text{speedup}(k) = \frac{E(k)}{1 + k\,(c_{\text{draft}} + c_{\text{verify}})}" />
+
+with both costs measured as a fraction of one plain decoding step.
+
+<Widget src="depth" height={420} caption="Expected tokens per pass (dashed) and net speedup (solid) as the number of drafts grows. The large dot marks the best $k$." />
+
+With the defaults, roughly DeepSeek-V3's acceptance rate and a module that costs a few percent of
+the 61-layer main model, the best depth is a few drafts and the curve is flat near the top. Each
+extra draft adds less than the one before because it only counts if every earlier draft landed.
+Drag <M t="r" /> to 1 and deeper drafting keeps paying for longer. Raise the verify cost, as happens at
+large batch sizes when the GPU is no longer waiting on memory, and the best <M t="k" /> drops to 1 or even 0.
+That's why speculation helps most in latency-bound, small-batch serving, and why MTP layers are an
+option you can switch on rather than always running.
+
+## What it costs
+
+- **Training compute.** Each module is another transformer block over every position, plus
+  another pass through the output head, which for a vocabulary of 129K tokens isn't small.
+- **Parameters on disk.** The MTP weights ship in the checkpoint. Engines that don't support
+  them just skip loading them, so the model still works without them.
+- **Serving complexity.** Speculative decoding needs a KV cache that can roll back rejected
+  tokens, and kernels that handle a few query positions per sequence at once. The major open
+  engines now do this, which is a large part of why MTP has become a standard feature of new
+  releases.
