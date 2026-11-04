@@ -1,0 +1,88 @@
+---
+title: How SGLang reuses the KV cache
+summary: RadixAttention keeps every finished request's KV cache in a radix tree, so later requests that share a prefix skip recomputing it.
+date: 2026-11-04
+tags: [llm, inference, data-structures]
+draft: false
+---
+
+Before a transformer can generate a single token, it has to run the whole prompt through every
+layer and store a key and a value vector per token per layer: the **KV cache**. This step is
+called **prefill**, and for long prompts it's most of the work. Then the request finishes, and a
+plain inference server throws that cache away.
+
+Real traffic repeats itself, though. Every turn of a chat resends the whole conversation so far.
+Every request to an app starts with the same system prompt. A few-shot template is pasted in
+front of thousands of questions. Sampling five answers to one prompt prefills that prompt five
+times. All of these share a **prefix**, and the KV for a prefix depends only on the prefix, never on
+what comes after it. So if the server kept the old cache and could find the longest
+already-computed prefix of a new prompt, it would only need to prefill the rest.
+
+That's what SGLang's **RadixAttention** does. It doesn't free the KV cache when a request ends. It
+files the cache under the request's tokens, prompt and output together, in a
+[radix tree](https://en.wikipedia.org/wiki/Radix_tree), and looks every new prompt up in that tree first.
+
+<Widget src="tree" height={560} />
+
+Each row is one node. A node holds a run of tokens (words here, to keep it readable), and the KV
+for a whole sequence is what you collect walking from the root down to it. Try this:
+
+1. Send **Chat 1 · turn 1**. The tree is empty, so all of it is prefilled (red). The output
+   (dashed) is stored too.
+2. Send **Chat 1 · turn 2**. Its prompt is the whole of turn 1, answer included, plus a new
+   question. Nearly all of it comes back blue: reused. Only the new question gets prefilled, and
+   the tree just grows a longer path.
+3. Send **Chat 2**. It shares the system prompt and `User:` with chat 1 and then diverges. The
+   lookup stops partway along an existing node, so that node **splits** in two: the shared part
+   becomes a parent with two children. That splitting is the difference between a radix tree and a
+   plain trie. Runs of tokens nobody branches off stay as one node.
+4. Send **Chat 2 · resample**. The prompt is a complete hit, and only the new output adds a branch.
+   This is how parallel sampling shares one prefill.
+5. The few-shot requests start with a different prefix, so they get their own subtree under the root.
+
+## Running out of room
+
+GPU memory is finite, so the tree can't grow forever. When a request needs more slots than are
+free, RadixAttention evicts **least recently used leaves** first (the `req n` on each row is the
+last request that touched it, and old rows fade). Evicting only leaves means a shared prefix stays
+as long as anything below it is still useful. After its last child goes it becomes a leaf
+itself and can be evicted in turn. Nodes in use by a running request are reference-counted and
+never evicted mid-flight. In the widget, that's the matched path being locked while room is made.
+
+Drag the **KV pool** down to about 40 and send the chat and few-shot requests in alternation.
+Each kind keeps pushing the other out, and the hit rate collapses. That's the problem the last
+part solves.
+
+## Order matters
+
+When many requests are waiting, the server gets to choose which to run next, and that choice
+decides what's in the cache when each one runs. Below, twelve requests arrive interleaved
+across three long templates (`A1 B1 C1 A2 B2 C2 …`). Each bar is one request in the order it was
+served. Its height is the prompt, split into reused (blue) and prefilled (red).
+
+<Widget src="schedule" height={380} caption="Requests are served one at a time; a real server batches them, but the effect on the cache is the same." />
+
+With a small pool, first-come-first-served thrashes: each template is evicted just before the
+next request that needs it arrives. SGLang's **cache-aware scheduler** instead runs the waiting
+request with the longest cached prefix first, so all the A requests run while A is hot, then
+all of B. In the offline case where every request is known up front, the SGLang paper shows this
+amounts to a depth-first walk of the tree, which is the best order possible as long as the cache
+holds at least one request.
+
+Now raise the pool past about 90. Everything fits, so both orders reuse the same amount, but the
+scheduler is still reordering. Look at the worst-case wait. Under longest-prefix-first, `C1`
+waits behind every A and B request. That's the price: a request whose prefix nobody else
+shares can sit in the queue while luckier ones jump ahead, so real schedulers need to bound
+how long it keeps doing that.
+
+## What the tree points at
+
+In SGLang the tree's keys are token ids, and each node's value is a list of indices into one big
+pool of KV slots on the GPU, one slot per token. Splitting a node just splits that list. Nothing
+moves in GPU memory. Because one request's KV ends up scattered across the pool, the attention
+kernel reads keys and values through those indices instead of from one contiguous buffer. That's
+where the *Attention* in the name comes from.
+
+Other servers do the same job differently. vLLM's prefix caching, for example, hashes fixed-size
+blocks of tokens and reuses whole blocks whose hash matches. The radix tree matches down to the
+single token and makes "which cached prefix is longest?" one walk from the root.
