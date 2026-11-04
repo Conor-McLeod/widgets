@@ -1,0 +1,64 @@
+---
+title: RMSNorm
+summary: Why most modern transformers divide by the root-mean-square and skip subtracting the mean.
+date: 2026-11-04
+tags: [machine-learning, transformers]
+draft: true
+---
+
+The original Transformer put a **LayerNorm** after every sublayer. Most recent large models (LLaMA, Mistral,
+Gemma and friends) use **RMSNorm** instead. It is LayerNorm with a step taken out, which raises the obvious
+question: what did that step do, and why is nobody missing it?
+
+For a vector *x* with *d* entries, LayerNorm centres it and then rescales it:
+
+> LayerNorm(x)<sub>i</sub> = (x<sub>i</sub> − μ) / σ · γ<sub>i</sub> + β<sub>i</sub>
+
+RMSNorm ([Zhang & Sennrich, 2019](https://arxiv.org/abs/1910.07467)) skips the centring and the bias.
+It only divides by the root-mean-square:
+
+> RMS(x) = √( (1/d) Σ x<sub>i</sub><sup>2</sup> + ε ),  RMSNorm(x)<sub>i</sub> = x<sub>i</sub> / RMS(x) · γ<sub>i</sub>
+
+The widgets below leave γ at 1, since a learned per-channel gain just stretches the result afterwards.
+
+## Scale goes, shape stays
+
+Drag the bars to edit an 8-dimensional input. The dashed blue lines mark ±RMS(x). Dividing by RMS(x) moves
+those lines to ±1, so the output always has an RMS of exactly 1. Things to try:
+
+- Press **× 2** or **÷ 2** a few times. The input grows and shrinks but the output doesn't change at all.
+  RMSNorm only cares about the *direction* of x, not its length.
+- Press **+ 1**. Now the output does change. RMSNorm is not invariant to a shift. Switch to
+  **LayerNorm** and press **+ 1** again: subtracting the mean (dashed red line) cancels the shift.
+- Try **all equal**. RMSNorm gives every entry 1. LayerNorm gives every entry 0, because once you subtract
+  the mean nothing is left.
+- Try **outlier**. One big entry inflates RMS(x) and squeezes everything else towards zero. Both norms do this.
+
+<Widget src="vector" height={520} />
+
+So LayerNorm buys one extra property, invariance to adding a constant to every channel. The RMSNorm paper's
+bet was that the rescaling was what helped training, and the re-centring wasn't. Experiments backed this up:
+models trained just as well, and the norm got cheaper. It needs one reduction over the vector (Σx²) instead of
+two (the mean, then the variance around it), and there's no β to store. A normalization runs twice per layer,
+so that saving adds up.
+
+## The geometry
+
+With γ = 1, every RMSNorm output has Σy<sub>i</sub><sup>2</sup> = d. That means RMSNorm is just
+*project x radially onto the sphere of radius √d*. LayerNorm does two projections. First it subtracts
+the mean, which drops x onto the hyperplane where the entries sum to zero. Then it scales onto the same sphere.
+Its outputs live on the sphere *intersected with* that hyperplane, which has one dimension fewer.
+
+You can see this most clearly with d = 2, where the plane is easy to draw. Drag **x** around.
+
+<Widget src="geometry" height={470} caption="A 2-D input. Blue: RMSNorm's output on the circle of radius √2. Red: LayerNorm's projection onto x₁ + x₂ = 0, then its output." />
+
+In 2-D, RMSNorm can reach any point on the circle. LayerNorm can only output (1, −1) or (−1, 1). Centring
+removed one of the two degrees of freedom, and scaling removed the other. In a real model *d* is in the
+thousands, so losing one dimension is negligible. That's a good argument for why the centring step doesn't
+matter much: it barely changes where outputs can go, and the next linear layer can learn any offset it needs.
+
+Now turn up **ε** and drag x close to the origin. Without ε, a tiny input gets blown up onto the circle
+just like a big one. With ε, the denominator never drops below √ε, so small inputs stay small and division
+by zero is impossible. Real models use something like ε = 10<sup>−5</sup> or 10<sup>−6</sup>, which only matters
+for vectors very close to zero.
