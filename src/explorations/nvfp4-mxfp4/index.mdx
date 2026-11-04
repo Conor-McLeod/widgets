@@ -1,0 +1,107 @@
+---
+title: NVFP4 and MXFP4
+summary: How 4-bit floats with only fifteen distinct values can hold neural-network weights, and why the two block-scaled formats pick their scales differently.
+date: 2026-11-04
+tags: [numerics, floating-point, machine-learning, gpu]
+---
+
+Large language models are now routinely stored, and increasingly trained, with 4-bit numbers. That
+sounds impossible: four bits is sixteen codes. Both formats in use, **MXFP4** and **NVFP4**, make it work
+the same way. They store tiny floats and give every small block of them a shared scale factor. They
+differ in how big the block is and how precise its scale is, and that difference turns out to
+matter.
+
+## Four bits of float
+
+The element type in both is FP4 **E2M1**: one sign bit, two exponent bits and one mantissa bit. Like
+any float (the [float64 exploration](/float64) has the full story), a normal value is
+
+<M block t="(-1)^{s} \times 2^{\,e - 1} \times 1.m_2" />
+
+with exponent bias 1, and exponent field 0 is a subnormal, <M t="0.m_2" />. There are no infinities and
+no NaN. Click through all sixteen codes.
+
+<Widget src="e2m1" height={250} />
+
+That leaves <M t="0, \pm 0.5, \pm 1, \pm 1.5, \pm 2, \pm 3, \pm 4, \pm 6" />. It's fifteen values, since
+<M t="+0" /> and <M t="-0" /> are the same number. Notice the spacing: half-steps near zero, then
+steps of 1, then 2. Relative precision is roughly constant, which suits weights and activations whose
+sizes spread over orders of magnitude.
+
+On its own this range is useless. The values in a weight matrix might all sit around <M t="0.01" />, and
+an activation might hit 300. The fix is a **scale**: store <M t="x / s" /> in FP4 and keep <M t="s" />
+somewhere else, so the value is <M t="s \times \text{fp4}" />. One scale for a whole tensor isn't
+enough, because a single large value would force a large <M t="s" /> and everything small would round
+to zero. So the tensor is cut into short **blocks**, each with its own scale, chosen so that the block's
+largest magnitude maps near the top of the FP4 range, 6.
+
+## Two ways to pick a scale
+
+**MXFP4** comes from the Open Compute Project's Microscaling (MX) spec, written jointly by AMD, Arm,
+Intel, Meta, Microsoft, NVIDIA and Qualcomm. A block is 32 values and its scale is **E8M0**: eight bits
+of exponent and nothing else, so the scale is always a power of two, <M t="2^{k}" /> with
+<M t="k" /> from <M t="-127" /> to <M t="127" />. The spec sets
+
+<M block t="s = 2^{\,\lfloor \log_2 \mathit{amax} \rfloor - 2}" />
+
+where <M t="\mathit{amax}" /> is the block's largest magnitude. The <M t="-2" /> is the exponent of E2M1's
+largest binade, so <M t="\mathit{amax} / s" /> always lands in <M t="[4, 8)" />.
+
+**NVFP4** is NVIDIA's format, introduced with its Blackwell GPUs. A block is 16 values, and its scale is
+an 8-bit **E4M3** float, which has three mantissa bits. So the scale can be (nearly) any number, and
+NVFP4 picks <M t="s \approx \mathit{amax} / 6" />.
+
+Slide the block's largest value and watch where it lands on each format's grid. The blue ticks are the
+FP4 values times the scale; the shaded band is beyond <M t="6s" />, where nothing can be stored.
+
+<Widget src="scale" height={330} caption="The other values in the block would be stored on the same grid, rounded to the nearest tick." />
+
+A power-of-two scale can only move the grid in octaves. When <M t="\mathit{amax} / s" /> falls in
+<M t="(6, 8)" />, the largest value is past the top tick and **clips** to 6, losing up to 25%. That's the
+case at the slider's starting point, about 7. When it falls just above 4, the value 6 sits unused above the block's
+maximum, and the block effectively loses the top of its grid. NVFP4's scale puts <M t="\mathit{amax}" />
+within a few percent of 6 every time, so the whole grid is put to use. (The scale is itself rounded to
+three mantissa bits, so the maximum can land a little above 6 and clip by a few percent, as it does at
+the start.)
+
+### Why NVFP4 needs a second scale
+
+E8M0 spans 254 octaves, so an MXFP4 scale can be anything a tensor needs. E4M3 only reaches from
+<M t="2^{-9}" /> to 448, about 17 octaves, and its precision is what makes it useful. NVFP4 therefore adds
+one FP32 scale per tensor, <M t="\mathit{amax}_{\text{tensor}} / (6 \times 448)" />, and each block's
+E4M3 scale is stored relative to it. Dequantizing an element is
+
+<M block t="x \approx s_{\text{tensor}} \times s_{\text{block}} \times \text{fp4}" />
+
+That one FP32 per tensor is negligible. The per-block scales are not: an 8-bit scale per 32 values costs
+MXFP4 <M t="8/32 = 0.25" /> extra bits per value, and one per 16 costs NVFP4 0.5. NVFP4 spends a quarter-bit
+more per value on finer blocks and finer scales.
+
+## Outliers and block size
+
+Small blocks matter most when a tensor has outliers, and the activations of large language models are
+known for them: a few channels hold values far larger than the rest. One big value sets the scale for
+its whole block, and the ordinary values beside it get crushed toward zero.
+
+Below, 64 values from a normal distribution are quantized both ways, with one value replaced by 12.
+Compare the outlier's block in each row, and toggle the outlier off to see the difference without it.
+
+<Widget src="block" height={470} caption="The axis is cut off at the largest ordinary value; the triangle marks the outlier." />
+
+With the outlier, MXFP4's block scale jumps to <M t="2^{1}" />. Its smallest step is then <M t="0.5 \times 2 = 1" />,
+so anything under 0.5 rounds to zero, across all 32 values of the block. NVFP4 confines the
+damage to 16 values, and its scale is <M t="12/6 = 2" /> as well, but only in that one block. The other
+three blocks keep their own, smaller scales. Without the outlier the gap narrows, but NVFP4 still wins,
+mostly from fitting <M t="\mathit{amax}" /> to 6 instead of to a power of two.
+
+## Where they're used
+
+Both are hardware formats. NVIDIA's Blackwell [Tensor Cores](/tensor-core) multiply FP4 blocks directly,
+applying the block scales inside the matrix instruction and accumulating in FP32, and they accept both
+MXFP4 and NVFP4. AMD's MI350 series supports the MX formats. OpenAI released the gpt-oss weights in
+MXFP4, and NVIDIA has published results on pretraining language models in NVFP4.
+
+Neither format is a drop-in replacement for higher precision. Practical recipes keep sensitive layers
+in higher precision, use stochastic rounding for gradients, and apply random rotations (Hadamard
+transforms) that spread outliers across a block before quantizing. The block scale is the part both
+formats share, and it is what makes four bits workable in the first place.
