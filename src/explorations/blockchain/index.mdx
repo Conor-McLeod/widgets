@@ -1,0 +1,145 @@
+---
+title: What a blockchain actually is
+summary: A linked list whose pointers are hashes, built up from hash functions to proof of work, Merkle trees and forks.
+date: 2026-11-04
+tags: [data-structures, cryptography, hashing]
+draft: false
+---
+
+Leave out the currencies and the consensus politics and "blockchain" names a data structure. It's
+a **linked list where each pointer is a hash** of the node it points to. That one choice makes the
+list _tamper-evident_: you can't quietly change an old entry, because every later entry depends on
+it. This page builds the structure from the bottom up and asks, at each layer, what stops someone
+from rewriting history.
+
+## The building block: a hash function
+
+A cryptographic hash such as SHA-256 takes any input and returns 256 bits. Four properties matter here:
+
+- **Deterministic**: the same input always gives the same output, so anyone can recompute it.
+- **Fixed size**: one byte or one gigabyte, the output is still 32 bytes, which makes it a compact fingerprint.
+- **Avalanche**: changing one input bit flips about half the output bits, so similar inputs don't give similar hashes.
+- **One-way and collision-resistant**: given a hash, nobody knows how to find an input that produces it.
+  Nobody knows how to find two inputs with the same hash either.
+
+The two inputs below differ in one character. Edit either one and count how many of the 256 output
+bits change.
+
+<Widget
+  src="hash"
+  height={430}
+  caption="SHA-256 of two inputs. Highlighted hex digits and blue cells mark where the hashes differ."
+/>
+
+The count stays near 128 however small the edit is. Try changing only the case of one letter, or
+adding a trailing space. Nothing about the input can be read off its hash. That's why a hash works
+as a _commitment_: once you publish a hash, you're bound to one input.
+
+## Hash pointers make a chain
+
+A **block** has a small **header** and a **body**. The header holds, among other fields, the hash of
+the previous block's header. The block's own hash is the hash of its header. So block _n_'s hash
+depends on block _n − 1_'s hash, which depends on block _n − 2_'s, and so on back to the
+**genesis** block, which has no parent.
+
+If you change anything in an old block, its hash changes, and the next block's `prev` field no
+longer points at it. Recompute the next block's hash to fix that and the block after it breaks
+instead. To patch the edit you have to redo the hash of every later block.
+
+If hashes were cheap, redoing them would be easy and the chain wouldn't protect anything. Bitcoin
+makes them expensive with **proof of work**: a block only counts if its hash is below a target, here
+simplified to "starts with _d_ zero hex digits". The only known way to find such a hash is to keep
+changing a throwaway field, the **nonce**, and rehashing. Each zero digit makes that 16 times harder.
+
+<Widget
+  src="chain"
+  height={920}
+  caption="Four blocks. Each prev field is the hash of the block above it. The data field stands in for the block body."
+/>
+
+Things to try:
+
+1. Change the data in **block 1**. Block 1 fails its proof of work, and blocks 2 and 3 go red as well
+   because their `prev` changed under them.
+2. Press **mine** on block 1. It counts nonces until it finds a hash with enough zeros. Blocks 2 and 3
+   stay red. Fixing one block doesn't fix the ones that build on it.
+3. Press **re-mine … to the tip** and look at how many tries the repair costs in total.
+4. Set difficulty to **5** and tamper again. That's about a million hashes per block, so the
+   repair takes several seconds. Bitcoin's target needs more than 10<sup>23</sup> hashes per block on average.
+
+The rewriter is also racing everyone else. While they re-mine old blocks, the honest network keeps
+adding new ones at the tip. To catch up they need more hash power than everyone else combined. The
+structure doesn't stop tampering. It makes tampering detectable, and proof of work makes it expensive.
+
+## What the header commits to
+
+A block can hold thousands of transactions, but the hash only covers the 80-byte header. In Bitcoin
+the header fields are:
+
+| field           | bytes | purpose                                       |
+| --------------- | ----- | --------------------------------------------- |
+| version         | 4     | which rules the block follows                 |
+| previous hash   | 32    | the link to the parent block                  |
+| Merkle root     | 32    | a commitment to every transaction in the body |
+| timestamp       | 4     | roughly when it was mined                     |
+| target ("bits") | 4     | the difficulty this hash must meet            |
+| nonce           | 4     | the field miners vary                         |
+
+The header doesn't list the transactions. It holds the **Merkle root**, one hash that covers all of
+them. To build it, hash each transaction, then hash those hashes together in pairs, then hash the
+pairs of results, until one hash is left. If a level has an odd number of nodes, Bitcoin pairs the
+last node with a copy of itself. (That shortcut turned out to let two different transaction lists
+produce the same root, and Bitcoin had to add a check for it. Newer designs avoid it.)
+
+<Widget
+  src="merkle"
+  height={520}
+  caption="Click a leaf to select a transaction, then edit it below the tree. Red marks hashes that no longer match the original."
+/>
+
+Edit the selected transaction. The change only travels up one path, from the leaf to the root, and
+the sibling branches stay the same. Since the header contains the root, editing any transaction
+breaks the block's hash, so the tamper evidence from the last section covers the body too.
+
+The tree also gives **inclusion proofs**. To show that `tx2` is in a block, you don't need the other
+transactions. You need the sibling hash at each level, one per level, which are the outlined boxes.
+Hash your way up with them, and if you land on the root in the header, the transaction is in the
+block. With 16 transactions that's 4 hashes. With a million it's 20. That's how a phone wallet can
+check a payment against block headers without downloading the blocks, which Bitcoin calls
+_simplified payment verification_.
+
+## It's really a tree
+
+Each block names exactly one parent, but nothing stops two blocks naming the _same_ parent. Two
+miners can find a valid block at nearly the same moment, both building on the current tip. So the
+whole structure is a **tree** rooted at genesis, and "the blockchain" is one path through it.
+
+Nodes pick the path with the most accumulated proof of work. When every block has the same
+difficulty, as it does here, that's the longest branch. Blocks off that path are **stale**: they're
+valid, but they don't count.
+
+<Widget
+  src="forks"
+  height={300}
+  caption="Click any block to mine a child on it. Highlighted blocks are the main chain and ▲ is its tip."
+/>
+
+Try this:
+
+1. Press **start a fork at the tip's parent**. That creates a second block at the tip's height.
+   It's a tie, and the block seen first stays the tip.
+2. Click the new block to extend it. Its branch is now longer, so the main chain switches over and
+   the old tip becomes stale. That's a **reorganisation**.
+3. Hover over blocks deeper in the main chain and read their **confirmations**: the number of blocks
+   from that one to the tip, counting itself. Reverting a block with _k_ confirmations means
+   out-mining _k_ blocks of honest work, and the odds of doing that fall off exponentially with _k_.
+   That's why exchanges wait for several confirmations, commonly six, before treating a deposit as final.
+
+## Summing up
+
+- A **hash** is a fixed-size fingerprint that commits you to one input.
+- **Hash pointers** chain the headers, so editing any block breaks every block after it.
+- **Proof of work** makes recomputing those hashes expensive, so a detectable edit is also costly.
+- A **Merkle root** extends the header's commitment to every transaction, and supports short inclusion proofs.
+- The blocks form a **tree**. Consensus means agreeing on which path counts, and older blocks get
+  harder to change as more blocks are built on top of them.
