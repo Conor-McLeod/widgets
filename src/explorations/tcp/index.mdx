@@ -1,0 +1,187 @@
+---
+title: How TCP makes a reliable stream out of lost packets
+summary: Sequence numbers, the three-way handshake, cumulative ACKs, retransmission and congestion control, built up one mechanism at a time.
+date: 2026-11-04
+tags: [networking, protocols]
+draft: false
+---
+
+IP, the layer underneath almost everything on the internet, makes one promise: it will _try_ to get
+a packet to an address. Packets get dropped when a router's queue is full. They can arrive out of
+order when two take different paths, and a misbehaving link can deliver one twice. Each packet is
+on its own.
+
+Applications want something else: a pipe. Write bytes in at one end, read the same bytes out at the
+other, in order, none missing. **TCP** builds that pipe on top of IP. Underneath it's a handful of
+ideas: number every byte, have the receiver say what it has, resend what wasn't confirmed, and
+don't send faster than the network can carry. This page takes them one at a time.
+
+## What's in a segment
+
+TCP chops the byte stream into **segments** and puts each one in an IP packet behind a header of at
+least 20 bytes:
+
+| field                 | bits | purpose                                                       |
+| --------------------- | ---- | ------------------------------------------------------------- |
+| source, dest port     | 16+16 | which connection on each host this belongs to                |
+| sequence number       | 32   | the stream position of this segment's first byte              |
+| acknowledgment number | 32   | the next byte the sender of this segment expects to receive   |
+| flags                 | 8    | `SYN`, `ACK`, `FIN`, `RST`, `PSH` and a few others            |
+| window                | 16   | how many more bytes the sender of this segment can buffer     |
+| checksum              | 16   | catches corruption in header and data                         |
+| options               | 0–320 | maximum segment size, window scaling, selective ACKs, timestamps |
+
+A connection is identified by four numbers: both IP addresses and both ports. Everything else in
+this page is about how two hosts use the sequence and acknowledgment fields.
+
+## Opening and closing a connection
+
+Before any data flows, both sides need to agree where each direction's numbering starts. Each
+side picks its own **initial sequence number** (ISN) at random. Starting at a random point in the
+<M t="2^{32}" /> space means a delayed segment from an old connection on the same ports is unlikely to
+land inside the new one's window. It also makes it hard for an attacker who can't see the traffic
+to forge a segment the receiver will accept.
+
+<Widget
+  src="handshake"
+  height={720}
+  caption="One connection from start to finish. The client is on the left. State names are the ones in the TCP spec."
+/>
+
+Step through it with **next**. Things to notice:
+
+1. The handshake is three segments because each side has to _propose_ an ISN and _see it
+   acknowledged_. The server's SYN and its ACK of the client's SYN share segment 2, so four messages
+   fold into three.
+2. `SYN` and `FIN` each use up one sequence number even though they carry no data. That's what
+   lets them be acknowledged and retransmitted like data.
+3. Tick **relative numbers**. Now each side's ISN reads as 0, and you can see that `ack` always
+   names the _next_ byte wanted, not the last byte received. After 120 bytes of request starting at
+   byte 1, the server acks 121.
+4. The close takes four segments because each direction closes on its own. Between steps 8 and 9 the
+   connection is **half-closed**: the server could still be sending.
+5. The side that closes first ends in **TIME-WAIT** and holds onto the port pair for a while. A busy
+   client that opens and closes many short connections can run out of ports this way.
+
+## Reliability: number, acknowledge, resend
+
+Once the connection is open, the sender numbers its bytes and the receiver acknowledges them. TCP's
+acknowledgments are **cumulative**: `ack 5` means "I have everything before 5", whatever arrived
+after that. If the sender doesn't hear an ACK in time, it resends.
+
+The simplest version sends one segment, waits for the ACK, then sends the next. That's correct but
+slow: one segment per round trip whatever the link's speed. So TCP lets the sender have up to a
+**window** of unacknowledged data in flight at once. As ACKs return, the window slides forward and
+new segments go out. In steady state:
+
+<M block t="\text{throughput} \approx \frac{\text{window}}{\text{RTT}}" />
+
+The widget below numbers segments 1 to 16 to keep the labels short. Real TCP numbers bytes, so
+`ack 5` here stands for something like `ack 4381`.
+
+<Widget
+  src="window"
+  height={470}
+  caption="Top: the sender's stream, with the window outlined. Middle: data segments travel right and ACKs (a5 means ack 5) travel left. Bottom: what the receiver holds. Tap a packet in flight to drop it."
+/>
+
+Things to try:
+
+1. Set **window 1** and reset. That's stop-and-wait: each segment waits for the previous ACK. Then
+   try **8**. The path is the same, but the transfer finishes in a fraction of the time.
+2. With window 4 or more, drop segment 3. The receiver buffers 4, 5 and 6 but can't hand them to the
+   application, and each arrival triggers another `a3`. Three **duplicate ACKs** are a strong hint that
+   3 was lost rather than delayed, so the sender resends it without waiting for the timer. That's
+   **fast retransmit**. When 3 arrives the ACK jumps straight past everything that was buffered.
+3. Turn fast retransmit off and drop a segment again. Now nothing happens until the timer bar fills
+   up. Losing a segment costs a whole timeout rather than about one round trip.
+4. Drop an **ACK** instead. Usually nothing visible happens, because the next ACK is cumulative and
+   covers it. Losing ACKs is cheap. Losing data isn't.
+5. Set random loss to 20% and watch the retransmission count climb. Everything still arrives, in
+   order.
+
+How long should the timer be? Too short and the sender resends segments that weren't lost; too long
+and a loss stalls the connection. TCP measures round-trip time <M t="R" /> as it goes and keeps a
+smoothed average and a variation estimate (RFC 6298):
+
+<M block t="\begin{aligned} \text{RTTVAR} &\leftarrow \tfrac{3}{4}\,\text{RTTVAR} + \tfrac{1}{4}\,\lvert \text{SRTT} - R \rvert \\ \text{SRTT} &\leftarrow \tfrac{7}{8}\,\text{SRTT} + \tfrac{1}{8}\,R \\ \text{RTO} &= \text{SRTT} + 4\,\text{RTTVAR} \end{aligned}" />
+
+Adding four times the variation means a path with jittery delay gets a more patient timer. Each
+time the timer expires, the RTO doubles, so a dead path isn't hammered with retries.
+
+Two refinements real stacks use. **Selective acknowledgment** (SACK) lets the receiver say "I also
+have 4 to 6", so the sender resends only the holes. And the receiver puts the space left in its
+buffer in every segment's window field. That's **flow control**: a slow reader shrinks the advertised
+window and the sender slows down to match.
+
+## Congestion control: not overrunning the network
+
+Flow control protects the receiver. Nothing so far protects the network in between. If every sender
+pushes its full window into a router that can't keep up, the router's queue fills, it drops packets,
+the senders retransmit, and the retransmissions add to the overload. In October 1986 this happened
+for real: throughput between two sites three hops apart fell from 32 kbit/s to 40 bit/s. Van
+Jacobson's fix, still the basis of TCP today, is for each sender to keep a second limit, the
+**congestion window** (`cwnd`), and send no more than the smaller of `cwnd` and the receiver's
+window.
+
+The network never says how much capacity it has, so the sender probes and treats a lost packet as
+the signal that it went too far:
+
+- **Slow start.** Begin at a small window and add one segment per ACK, which doubles `cwnd` each
+  round trip. Despite the name, that's exponential growth.
+- **Congestion avoidance.** Once `cwnd` reaches the threshold `ssthresh`, add just one segment per
+  round trip.
+- **On a loss**, set `ssthresh` to half the current window. **Tahoe** then drops `cwnd` back to 1
+  and slow-starts again. **Reno**, when the loss was signalled by three duplicate ACKs, sets `cwnd`
+  to the new `ssthresh` and carries on in congestion avoidance. After a timeout, both start over
+  from 1, because a timeout means nothing is getting through.
+
+Adding a constant when things go well and halving when they don't is called **AIMD** (additive
+increase, multiplicative decrease). When several flows share a link and all follow it, their windows
+converge towards equal shares.
+
+<Widget
+  src="congestion"
+  height={600}
+  caption="cwnd per round trip on one bottleneck. The link carries a fixed number of segments per round trip and the router can queue some more. A window bigger than both overflows the queue."
+/>
+
+Things to try:
+
+1. Watch Reno's **sawtooth**: slow start overshoots, a loss halves the window, then it climbs one
+   segment per round trip until it overflows again. Tahoe, the faint line, spends a slow start
+   recovering from every loss and moves less data for it.
+2. Set the **buffer to 0**. Reno's window now swings between about half the link and the link, so it
+   only uses about three quarters of the capacity.
+3. Set the **buffer equal to the link**. Halving the window now never takes it below the link's
+   capacity, so once slow start is over the link never goes idle. The few percent still missing are
+   the first handful of round trips. That's where the old rule of thumb "router buffer = bandwidth ×
+   delay" comes from.
+4. Now look at **avg queue**. The extra window doesn't move more data. It sits in the router's queue
+   and adds delay to every packet, including other people's. Very large buffers that stay full like
+   this are called **bufferbloat**.
+5. Click a round to force a timeout there and see how much link time the restart from 1 costs.
+
+The sawtooth also tells you what throughput a loss rate allows. With one loss every <M t="1/p" />
+packets, Reno settles at roughly
+
+<M block t="\text{throughput} \approx \frac{\text{MSS}}{\text{RTT}} \sqrt{\frac{3}{2p}}" />
+
+where MSS is the segment size. Halving the RTT doubles it, but cutting the loss rate by a factor
+of four only doubles it. That's why long, fast paths struggle with Reno, and why newer algorithms
+change the growth curve. **CUBIC**, the Linux default, grows the window as a cubic function of time
+since the last loss, so it gets back to the old size quickly. **BBR** doesn't wait for loss at all:
+it estimates the bottleneck bandwidth and minimum RTT and paces packets to match. Modern stacks also
+start with a window of 10 segments rather than 1, since most pages are small enough to finish
+before slow start would ramp up.
+
+## Summing up
+
+- IP delivers packets on a best-effort basis. TCP turns them into an ordered, reliable **byte stream**.
+- The **three-way handshake** swaps random initial sequence numbers. Each side proposes one and sees
+  it acknowledged.
+- **Cumulative ACKs** name the next byte wanted. Missing data is resent after a **timeout** derived from
+  measured RTT, or sooner on **three duplicate ACKs**.
+- A **window** of unacknowledged data keeps the pipe full. Throughput is about the window divided by RTT.
+- **Flow control** keeps the sender within the receiver's buffer. **Congestion control** keeps it
+  within the network's capacity, by probing upwards and backing off on loss.
