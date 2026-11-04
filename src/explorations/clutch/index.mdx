@@ -1,0 +1,62 @@
+---
+title: Finding the bite point
+summary: What a clutch is actually doing as you lift the pedal, why cars stall, and how a hill start works.
+date: 2026-11-03
+tags: [cars, physics, simulation]
+draft: true
+---
+
+A car with a stopped wheel and an engine idling at 850 rpm has a speed mismatch. The engine can't
+run any slower than idle, and the wheels can't start at anything faster than zero. The clutch
+deals with that mismatch. It's two friction surfaces: the **flywheel** bolted to the engine and a
+**disc** splined to the gearbox. Springs clamp them together, and the pedal pulls the springs
+off.
+
+While the surfaces slip against each other, the clutch passes torque from the faster side to the
+slower one. How much torque depends only on how hard they're clamped, not on how fast they slip.
+Once the two speeds meet, the surfaces lock and turn as one shaft.
+
+<Widget src="drive" height={560} />
+
+Drag the pedals. They stay where you leave them, and once one is focused the arrow keys nudge it
+(hold Shift for bigger steps). To pull away:
+
+1. Press the clutch to the floor and pick **1**.
+2. Lift slowly. Nothing happens over the bottom of the travel because the disc isn't touching yet.
+   When the pedal enters the dashed **bite** band, the disc touches. The engine trace dips and the
+   idle control opens the throttle a little to hold the revs up.
+3. Release the handbrake. On the flat, idle torque alone will creep the car forward.
+4. Keep lifting. The shaded gap on the trace is slip, and the two lines close as the car speeds up.
+   When they meet, the status reads **locked** and the gas pedal drives the wheels directly.
+
+## Why it stalls
+
+The disc grips as hard as the pedal says, however fast the engine is turning. If you let the pedal
+up quickly, the clutch asks the engine for more torque than it can make at idle. The engine
+slows towards the wheels' speed instead of the other way round, and it stops once it drops under
+about 300 rpm. Try dumping the clutch with no gas. Then do it again with some gas held and watch
+the engine trace dip less.
+
+Holding the brakes with the clutch up stalls it too: the wheels are pinned at zero, so the
+engine is dragged down to zero with them.
+
+## Hill starts
+
+Set the hill to 12% and try the same launch without the handbrake. The car rolls back as soon as
+you come off the brake, because at idle the bite point can't hold the slope. The usual technique:
+
+- With the handbrake on, add some gas (about half) and lift into the bite until the engine
+  trace sags and the torque readout climbs past what the slope needs.
+- Release the handbrake. The clutch is already holding the car, so it moves forward instead of
+  back.
+- Keep feeding the clutch up while holding the gas.
+
+Steeper hills need more torque through a slipping clutch for longer. That's the heat you can
+smell on a steep street. The red glow in the schematic scales with slip power (torque × speed
+difference).
+
+## The bite point moves
+
+Clutch discs wear thinner over time, so the springs have to travel further before they clamp,
+and the bite moves higher up the pedal. The **Bite point** slider shifts it. A high bite gives
+you less travel above it to feed the clutch in smoothly.
