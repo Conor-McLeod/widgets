@@ -1,0 +1,72 @@
+---
+title: What SwiGLU actually does
+summary: Why most modern LLMs swapped the ReLU in their feed-forward layers for a gated product of two projections.
+date: 2026-11-04
+tags: [machine-learning, transformers]
+draft: true
+---
+
+Every transformer block has a feed-forward network (FFN) after attention. In the original
+transformer it was two matrices with a ReLU between them, applied to each token on its own:
+
+> FFN(x) = W<sub>2</sub> · ReLU(W<sub>1</sub>x)
+
+LLaMA, PaLM, Mistral, Gemma and most of their successors use a different layer called **SwiGLU**
+(Shazeer, 2020):
+
+> FFN<sub>SwiGLU</sub>(x) = W<sub>2</sub> · ( Swish(Wx) ⊙ Vx )
+
+So they made two changes: a smoother activation, and a second projection that gets multiplied
+in elementwise. Each one is worth looking at separately.
+
+## Swish: a soft ReLU
+
+Swish<sub>β</sub>(x) = x · σ(βx) multiplies its input by a sigmoid of that same input. The sigmoid
+acts as a soft on/off switch: close to 1 for large positive x, close to 0 for large negative x.
+With β = 1 it's also called **SiLU**, and that's the version SwiGLU uses.
+
+Drag β. At β = 0 the sigmoid is ½ everywhere and Swish is just the line x/2. As β grows the
+switch sharpens, and by β ≈ 8 the curve is hard to tell apart from ReLU. GELU, the activation
+in GPT-2 and BERT, sits almost exactly on Swish at β ≈ 1.7.
+
+<Widget src="activations" height={470} />
+
+Two things to notice. Swish **dips below zero** for negative inputs (the minimum is about −0.278
+at β = 1) and only flattens out further left, so it isn't monotonic. Turn on the slope view as
+well: ReLU's gradient is exactly 0 for every negative input, while Swish's is small but not
+zero, so a unit that has drifted negative can still be trained back.
+
+## The gate: multiplying two directions
+
+The bigger change is the ⊙. A classic hidden unit computes act(w·x): it projects the input onto
+a single direction w and bends the result. Its output can only change as you move along w, so
+over any 2D slice of input space it looks like a ramp with straight, parallel contours.
+
+A SwiGLU unit has two weight vectors. It computes Swish(w·x), the **gate**, and multiplies it
+by v·x, a plain linear projection. Where w·x is large and positive the gate is about w·x, so the
+unit is close to the **product** (w·x)(v·x). That's a quadratic function of the input, which a
+single ReLU unit can't produce.
+
+Start on **ReLU** and drag w to see the ramp rotate. Then switch to **SwiGLU** and drag v. The
+output now changes sign across the line v·x = 0, but only on the side where the gate is open.
+**Bilinear** drops the activation altogether. Shazeer tested that variant too, and it did
+nearly as well, which suggests the multiplication matters more than the exact choice of
+activation.
+
+<Widget src="gate" height={600} caption="One hidden unit over a 2D input. Blue is positive, red is negative, opacity is |h| relative to the largest value on screen." />
+
+## Keeping the parameter count fair
+
+The gate costs a third matrix: W and V are both d × h, and W<sub>2</sub> is h × d. With the usual
+hidden size h = 4d, SwiGLU would have 1.5× the parameters and FLOPs of the layer it replaces,
+and that wouldn't be a fair comparison. So the hidden size is cut to two thirds:
+3 · d · (⅔ · 4d) = 2 · d · 4d.
+
+LLaMA then rounds h up to a multiple of 256 to keep the matrix shapes friendly for GPU kernels.
+For d = 4096 that gives 11,008, the odd-looking number you'll find in LLaMA 7B's config.
+
+<Widget src="budget" height={330} />
+
+Slide the hidden size to see how quickly the third matrix adds up. At equal cost, the gated
+layer with fewer hidden units trains to lower loss. Shazeer's paper doesn't explain why. It
+famously credits the result to "divine benevolence".
