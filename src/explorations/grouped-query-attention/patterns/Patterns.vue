@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import Tex from '~/math/Tex.vue';
 
 const NQ = 8;
 const T = 6;
@@ -140,7 +141,7 @@ const meanDrift = computed(() => heads.value.reduce((s, x) => s + x.drift, 0) / 
             />
           </template>
         </div>
-        <div class="drift" :class="{ zero: hd.drift < 0.005 }">Δ {{ hd.drift.toFixed(2) }}</div>
+        <div class="drift" :class="{ zero: hd.drift < 0.005 }"><Tex t="\Delta" /> {{ hd.drift.toFixed(2) }}</div>
       </figure>
     </div>
 

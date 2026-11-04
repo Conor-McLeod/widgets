@@ -1,6 +1,7 @@
 // Vanilla widget: a Merkle tree over a block's transactions. Edit a transaction to watch the change climb to the
 // root; select a leaf to see its inclusion proof (the sibling hashes you'd need to check it against the root).
 import type { Mount } from '~/widget';
+import { tex } from '~/math/tex';
 import { sha256 } from '../lib/sha256';
 
 const SEED = [
@@ -194,15 +195,15 @@ export const mount: Mount = (el) => {
       const sib = (levels[lvl][idx ^ 1] ?? levels[lvl][idx]).hash;
       const right = (idx & 1) === 0;
       h = right ? sha256(h + sib) : sha256(sib + h);
-      steps.push(
-        `<li>H(${right ? 'me ‖ <b>' + sib.slice(0, 10) + '…</b>' : '<b>' + sib.slice(0, 10) + '…</b> ‖ me'}) = ${h.slice(0, 10)}…</li>`,
-      );
+      const s = `<b>${sib.slice(0, 10)}…</b>`;
+      const cat = right ? `me ${tex('\\Vert')} ${s}` : `${s} ${tex('\\Vert')} me`;
+      steps.push(`<li>${tex('H(')}${cat}${tex(')')} = ${h.slice(0, 10)}…</li>`);
       idx >>= 1;
     }
     const root = levels[depth - 1][0].hash;
     const pristineRoot = pristine[depth - 1][0].hash;
     proofEl.innerHTML =
-      `<div class="muted">Proof that <b>tx${selected}</b> is in the block: start from H(tx${selected}) = ${sha256(live[selected]).slice(0, 10)}… and fold in ${depth - 1} sibling hash${depth - 1 === 1 ? '' : 'es'} (the boxes outlined in bold):</div>` +
+      `<div class="muted">Proof that <b>tx${selected}</b> is in the block: start from ${tex(`H(\\texttt{tx${selected}})`)} = ${sha256(live[selected]).slice(0, 10)}… and fold in ${depth - 1} sibling hash${depth - 1 === 1 ? '' : 'es'} (the boxes outlined in bold):</div>` +
       `<ol>${steps.join('')}</ol>` +
       `<div>Result matches the root in the header: ${
         root === pristineRoot

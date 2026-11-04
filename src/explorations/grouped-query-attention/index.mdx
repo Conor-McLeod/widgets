@@ -15,7 +15,7 @@ have eight times more query heads than key and value heads?
 In ordinary **multi-head attention** (MHA), each head has its own query, key and value projection.
 When a model generates text one token at a time, it saves the keys and values of every earlier
 token so it doesn't have to recompute them. This is the **KV cache**, and it grows with
-layers × heads × head size × context length.
+<M t="\text{layers} \times \text{heads} \times \text{head size} \times \text{context length}" />.
 
 Decoding one token does very little arithmetic, but it has to read every weight and the whole
 KV cache from memory. So decoding speed is limited by memory bandwidth, and at long contexts or
@@ -43,14 +43,14 @@ checkpoint by **mean-pooling** the key and value heads in each group, then conti
 for about 5% of the original compute so the queries adapt to the shared keys. The widget below
 does that conversion on a toy layer with random weights: 8 heads, 6 tokens, causal attention.
 Each square is one head's attention pattern. Rows are query positions, columns are the
-tokens attended to, and darker means more weight. Δ is how far each head's pattern moved from the original.
+tokens attended to, and darker means more weight. <M t="\Delta" /> is how far each head's pattern moved from the original.
 
 Things to try:
 
-- Going from 8 to 4 to 2 to 1 K/V heads. Δ grows as more heads share a key, but even with one
+- Going from 8 to 4 to 2 to 1 K/V heads. <M t="\Delta" /> grows as more heads share a key, but even with one
   shared key the heads still attend to different tokens.
 - Toggling **show** between *shared K* and *original* to see what changed.
-- Switching to **keep first**: the first head of each group keeps its original pattern (Δ 0), while the others
+- Switching to **keep first**: the first head of each group keeps its original pattern (<M t="\Delta = 0" />), while the others
   are forced onto a key they were never trained with. The paper found mean-pooling recovers quality faster.
 
 <Widget src="patterns" height={480} caption="Random weights, so the patterns themselves mean nothing. Watch how much they change." />
@@ -61,10 +61,12 @@ part of why the short uptraining step matters. A model trained with GQA from the
 ## What it saves in practice
 
 Here are real model shapes. The cache size is
-`2 (K and V) × layers × K/V heads × head dim × bytes × tokens × batch`.
+
+<M block t="2\,(\text{K and V}) \times \text{layers} \times \text{K/V heads} \times \text{head dim} \times \text{bytes} \times \text{tokens} \times \text{batch}" />
+
 Push the context and batch up and compare the cache with the weights.
 
-<Widget src="cache" height={460} caption="Weights assume bf16. The share is cache ÷ (cache + weights), the bytes each generated token has to read." />
+<Widget src="cache" height={460} caption="Weights assume bf16. The share is $\text{cache} / (\text{cache} + \text{weights})$, the bytes each generated token has to read." />
 
 For Llama 2 70B at an 8k context, multi-head attention would need about 21 GB of cache per sequence.
 With 8 K/V heads it needs 2.7 GB. At 32 sequences the MHA cache would be five times larger than the

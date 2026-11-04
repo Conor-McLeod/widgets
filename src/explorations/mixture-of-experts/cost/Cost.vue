@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import Tex from '~/math/Tex.vue';
 
 // Counting only the feed-forward block: every expert is the same size as one dense FFN, so
 // storage scales with E and per-token compute scales with k.
@@ -51,12 +52,12 @@ const combos = computed(() => fmt(choose(E.value, k.value)));
   <div class="co">
     <div class="co-ctl">
       <label>
-        <span>experts</span>
+        <span>experts <Tex t="E" /></span>
         <input type="range" min="0" :max="EXPERTS.length - 1" v-model.number="eIdx" />
         <output>{{ E }}</output>
       </label>
       <label>
-        <span>top-k</span>
+        <span>top-<Tex t="k" /></span>
         <input type="range" min="1" :max="kMax" v-model.number="k" />
         <output>{{ k }}</output>
       </label>
@@ -78,7 +79,7 @@ const combos = computed(() => fmt(choose(E.value, k.value)));
         <dd><strong>{{ E }}×</strong> a dense FFN</dd>
         <dt>FFN compute per token</dt>
         <dd><strong>{{ k }}×</strong> a dense FFN</dd>
-        <dt>stored ÷ used</dt>
+        <dt>stored / used, <Tex t="E / k" /></dt>
         <dd><strong>{{ (E / k).toFixed(E % k ? 1 : 0) }}</strong></dd>
         <dt>possible expert sets per token</dt>
         <dd><strong>{{ combos }}</strong></dd>

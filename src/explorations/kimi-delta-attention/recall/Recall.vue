@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import Tex from '~/math/Tex.vue';
 import { KEYS, SCRIPT, dist, keyVectors, latest, read, rgb, run, zeros, type Rule } from './memory';
 
 const rule = ref<Rule>('delta');
@@ -41,14 +42,14 @@ const cell = (x: number) => {
         <button :class="{ on: rule === 'delta' }" @click="rule = 'delta'">Delta rule</button>
       </div>
       <label :class="{ off: rule !== 'delta' }">
-        <span>β (write strength)</span>
+        <span><Tex t="\beta" /> (write strength)</span>
         <input v-model.number="beta" type="range" min="0.1" max="1" step="0.05" :disabled="rule !== 'delta'" />
         <output>{{ beta.toFixed(2) }}</output>
       </label>
       <label>
         <span>key overlap</span>
         <input v-model.number="overlap" type="range" min="0" max="0.6" step="0.05" />
-        <output>cos {{ cos.toFixed(2) }}</output>
+        <output><Tex t="\cos" /> {{ cos.toFixed(2) }}</output>
       </label>
     </div>
 
@@ -69,7 +70,7 @@ const cell = (x: number) => {
         {{ current.step.label }}.
         <template v-if="rule === 'delta'">
           Memory already returned <i class="sw" :style="{ background: rgb(current.t.predicted) }" /> for
-          {{ current.step.key }}, so it adds only β × the difference
+          {{ current.step.key }}, so it adds only <Tex t="\beta \times" /> the difference
           <code>[{{ current.t.written.map(fmt).join(', ') }}]</code>.
         </template>
         <template v-else> Adds the full value <code>[{{ current.t.written.map(fmt).join(', ') }}]</code> along the key. </template>
@@ -79,7 +80,7 @@ const cell = (x: number) => {
 
     <div class="panes">
       <figure>
-        <figcaption>State S (key channel × value channel)</figcaption>
+        <figcaption>State <Tex t="\mathbf{S}" /> (key channel <Tex t="\times" /> value channel)</figcaption>
         <table class="mat">
           <tbody>
             <tr v-for="(row, i) in S" :key="i">
@@ -91,7 +92,7 @@ const cell = (x: number) => {
       </figure>
 
       <figure>
-        <figcaption>Read back: Sᵀk for each key</figcaption>
+        <figcaption>Read back: <Tex t="\mathbf{S}^\top \mathbf{k}" /> for each key</figcaption>
         <table class="recall">
           <thead>
             <tr><th></th><th>last written</th><th>read</th><th>error</th></tr>

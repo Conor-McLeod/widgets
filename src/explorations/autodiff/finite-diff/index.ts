@@ -1,6 +1,7 @@
 // Vanilla widget: error of finite-difference derivatives of sin at x = 1, on log–log axes,
 // as the step h shrinks. Truncation error falls with h until rounding error takes over.
 import type { Mount } from '~/widget';
+import { svgLabel, tex, texText } from '~/math/tex';
 
 const X0 = 1;
 const EXACT = Math.cos(X0);
@@ -41,25 +42,25 @@ export const mount: Mount = (el) => {
   for (let e = H_MIN; e <= H_MAX; e += 2) {
     grid.push(
       `<line x1="${px(e)}" x2="${px(e)}" y1="${T}" y2="${H - B}" class="fd-grid"/>`,
-      `<text x="${px(e)}" y="${H - B + 16}" text-anchor="middle" class="fd-tick">1e${e}</text>`,
+      svgLabel(px(e), H - B + 13, tex(`10^{${e}}`), { anchor: 'middle', width: 50, className: 'fd-tick' }),
     );
   }
   for (let e = E_MIN + 1; e <= E_MAX; e += 4) {
     grid.push(
       `<line x1="${L}" x2="${W - R}" y1="${py(e)}" y2="${py(e)}" class="fd-grid"/>`,
-      `<text x="${L - 6}" y="${py(e) + 4}" text-anchor="end" class="fd-tick">1e${e}</text>`,
+      svgLabel(L - 6, py(e), tex(`10^{${e}}`), { anchor: 'end', width: 50, className: 'fd-tick' }),
     );
   }
 
   el.innerHTML = `
     <div class="fd">
       <div class="fd-legend">
-        <span class="fd-k fwd">forward difference (f(x+h) − f(x)) / h</span>
-        <span class="fd-k ctr">central difference (f(x+h) − f(x−h)) / 2h</span>
+        <span class="fd-k fwd">forward difference ${tex('(f(x+h) - f(x))/h')}</span>
+        <span class="fd-k ctr">central difference ${tex('(f(x+h) - f(x-h))/2h')}</span>
       </div>
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Error of finite differences against step size">
         ${grid.join('')}
-        <text x="${(L + W - R) / 2}" y="${H - 3}" text-anchor="middle" class="fd-axis">step size h →</text>
+        ${svgLabel((L + W - R) / 2, H - 8, texText('step size $h$ →'), { anchor: 'middle', className: 'fd-axis' })}
         <text x="12" y="${(T + H - B) / 2}" text-anchor="middle" class="fd-axis" transform="rotate(-90 12 ${(T + H - B) / 2})">error</text>
         <path d="${path(series(fwd))}" class="fd-line fwd"/>
         <path d="${path(series(ctr))}" class="fd-line ctr"/>
@@ -67,8 +68,8 @@ export const mount: Mount = (el) => {
         <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent" class="fd-hit"/>
       </svg>
       <dl class="fd-read">
-        <dt>exact cos(1)</dt><dd>${EXACT.toPrecision(17)}</dd>
-        <dt>h</dt><dd class="r-h">hover or drag the chart</dd>
+        <dt>exact ${tex('\\cos 1')}</dt><dd>${EXACT.toPrecision(17)}</dd>
+        <dt>${tex('h')}</dt><dd class="r-h">hover or drag the chart</dd>
         <dt>forward</dt><dd class="r-f">—</dd>
         <dt>central</dt><dd class="r-c">—</dd>
       </dl>
@@ -76,8 +77,8 @@ export const mount: Mount = (el) => {
     <style>
       .fd svg { display: block; width: 100%; height: auto; touch-action: none; font-family: var(--mono); }
       .fd-grid { stroke: var(--border); stroke-width: 1; }
-      .fd-tick { fill: var(--muted); font-size: 11px; }
-      .fd-axis { fill: var(--muted); font-size: 12px; font-family: var(--font); }
+      .fd-tick { color: var(--muted); font-size: 10px; }
+      .fd-axis { fill: var(--muted); color: var(--muted); font-size: 12px; font-family: var(--font); }
       .fd-line { fill: none; stroke-width: 1.6; stroke-linejoin: round; }
       .fd-line.fwd, .fd-k.fwd::before { stroke: var(--danger); background: var(--danger); }
       .fd-line.ctr, .fd-k.ctr::before { stroke: var(--accent); background: var(--accent); }

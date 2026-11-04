@@ -2,13 +2,13 @@
 // D = A·B + C on a 4×4×4 tile, computed two ways: one fused multiply-add per clock (a scalar FMA unit)
 // or the whole tile per clock (a Volta-style tensor core). Counts clocks, instructions and register reads.
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import Tex from '~/math/Tex.vue';
 
 const N = 4;
 const TOTAL = N * N * N;
 type Mode = 'fma' | 'tensor';
 
 const fmt = (v: number) => (v < 0 ? `−${-v}` : String(v));
-const paren = (v: number) => (v < 0 ? `(${fmt(v)})` : fmt(v));
 
 const rand = () => Math.floor(Math.random() * 7) - 3; // −3..3 keeps every sum readable
 const randMat = () => Array.from({ length: N }, () => Array.from({ length: N }, rand));
@@ -74,7 +74,8 @@ const detail = computed(() => {
   const terms = Array.from({ length: N }, (_, k) => {
     const a = A.value[i][k];
     const b = B.value[k][j];
-    return { text: `${paren(a)}·${paren(b)}`, done: k < n };
+    const t = (v: number) => (v < 0 ? `(${v})` : String(v));
+    return { tex: `${t(a)} \\cdot ${t(b)}`, done: k < n };
   });
   return { i, j, c: C.value[i][j], terms, value: acc.value[i][j], complete: n === N };
 });
@@ -140,16 +141,16 @@ onBeforeUnmount(stop);
 
     <div class="board">
       <div class="corner">
-        <span>D = A·B + C</span>
+        <Tex t="D = AB + C" />
       </div>
       <div class="mat b" aria-label="Matrix B">
-        <span class="lbl">B</span>
+        <span class="lbl"><Tex t="B" /></span>
         <template v-for="(row, r) in B" :key="r">
           <span v-for="(v, c) in row" :key="c" :class="{ lit: lit('b', r, c) }">{{ fmt(v) }}</span>
         </template>
       </div>
       <div class="mat a" aria-label="Matrix A">
-        <span class="lbl">A</span>
+        <span class="lbl"><Tex t="A" /></span>
         <template v-for="(row, r) in A" :key="r">
           <span v-for="(v, c) in row" :key="c" :class="{ lit: lit('a', r, c) }">{{ fmt(v) }}</span>
         </template>
@@ -178,13 +179,14 @@ onBeforeUnmount(stop);
     </div>
 
     <p class="detail">
-      <span class="muted">D[{{ detail.i }},{{ detail.j }}] =</span>
-      <span class="muted"> C </span>{{ fmt(detail.c) }}
+      <Tex class="muted" :t="`D_{${detail.i},${detail.j}} = C_{${detail.i},${detail.j}} + \\textstyle\\sum_k A_{${detail.i},k} B_{k,${detail.j}}`" />
+      <br />
+      <Tex :t="`= ${detail.c}`" />
       <template v-for="(t, k) in detail.terms" :key="k">
-        + <span :class="t.done ? '' : 'pending'">{{ t.text }}</span>
+        {{ ' ' }}<Tex t="+" />{{ ' ' }}<Tex :class="t.done ? '' : 'pending'" :t="t.tex" />
       </template>
-      <span v-if="detail.complete"> = <b>{{ fmt(detail.value) }}</b></span>
-      <span v-else class="muted"> (so far {{ fmt(detail.value) }})</span>
+      <template v-if="detail.complete">{{ ' ' }}<Tex t="=" />{{ ' ' }}<b><Tex :t="String(detail.value)" /></b></template>
+      <span v-else class="muted"> (so far <Tex :t="String(detail.value)" />)</span>
     </p>
 
     <dl class="stats">

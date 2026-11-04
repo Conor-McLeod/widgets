@@ -38,8 +38,8 @@ as a _commitment_: once you publish a hash, you're bound to one input.
 ## Hash pointers make a chain
 
 A **block** has a small **header** and a **body**. The header holds, among other fields, the hash of
-the previous block's header. The block's own hash is the hash of its header. So block _n_'s hash
-depends on block _n − 1_'s hash, which depends on block _n − 2_'s, and so on back to the
+the previous block's header. The block's own hash is the hash of its header. So block <M t="n" />'s hash
+depends on block <M t="n - 1" />'s hash, which depends on block <M t="n - 2" />'s, and so on back to the
 **genesis** block, which has no parent.
 
 If you change anything in an old block, its hash changes, and the next block's `prev` field no
@@ -48,7 +48,7 @@ instead. To patch the edit you have to redo the hash of every later block.
 
 If hashes were cheap, redoing them would be easy and the chain wouldn't protect anything. Bitcoin
 makes them expensive with **proof of work**: a block only counts if its hash is below a target, here
-simplified to "starts with _d_ zero hex digits". The only known way to find such a hash is to keep
+simplified to "starts with <M t="d" /> zero hex digits". The only known way to find such a hash is to keep
 changing a throwaway field, the **nonce**, and rehashing. Each zero digit makes that 16 times harder.
 
 <Widget
@@ -65,7 +65,7 @@ Things to try:
    stay red. Fixing one block doesn't fix the ones that build on it.
 3. Press **re-mine … to the tip** and look at how many tries the repair costs in total.
 4. Set difficulty to **5** and tamper again. That's about a million hashes per block, so the
-   repair takes several seconds. Bitcoin's target needs more than 10<sup>23</sup> hashes per block on average.
+   repair takes several seconds. Bitcoin's target needs more than <M t="10^{23}" /> hashes per block on average.
 
 The rewriter is also racing everyone else. While they re-mine old blocks, the honest network keeps
 adding new ones at the tip. To catch up they need more hash power than everyone else combined. The
@@ -131,8 +131,8 @@ Try this:
 2. Click the new block to extend it. Its branch is now longer, so the main chain switches over and
    the old tip becomes stale. That's a **reorganisation**.
 3. Hover over blocks deeper in the main chain and read their **confirmations**: the number of blocks
-   from that one to the tip, counting itself. Reverting a block with _k_ confirmations means
-   out-mining _k_ blocks of honest work, and the odds of doing that fall off exponentially with _k_.
+   from that one to the tip, counting itself. Reverting a block with <M t="k" /> confirmations means
+   out-mining <M t="k" /> blocks of honest work, and the odds of doing that fall off exponentially with <M t="k" />.
    That's why exchanges wait for several confirmations, commonly six, before treating a deposit as final.
 
 ## Summing up

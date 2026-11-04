@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import Tex from '~/math/Tex.vue';
 import { useExpertColors } from '../palette';
 
 // A router is a linear layer: logit_i = w_i · x + b_i, one row per expert. Softmax turns the
@@ -145,7 +146,7 @@ function onKey(ev: KeyboardEvent) {
         <output>{{ E }}</output>
       </label>
       <label>
-        <span>top-k</span>
+        <span>top-<Tex t="k" /></span>
         <input type="range" min="1" :max="Math.min(4, E)" v-model.number="k" />
         <output>{{ Math.min(k, E) }}</output>
       </label>

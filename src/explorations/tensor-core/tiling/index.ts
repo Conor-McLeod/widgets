@@ -1,6 +1,7 @@
 // Vanilla widget: a 16×16×16 matrix multiply broken into 4×4×4 tensor-core operations.
 // Each output tile stays put in registers while the k loop streams A and B tiles past it.
 import type { Mount } from '~/widget';
+import { svgLabel, tex, texText } from '~/math/tex';
 
 const T = 4; // tiles per side
 const TS = 4; // elements per tile side
@@ -11,6 +12,8 @@ const PAD = 18; // room for labels
 const W = M + GAP + M + 2;
 const H = PAD + M + GAP + M + 2;
 const TOTAL = T * T * T;
+
+const LABEL = 'font-size: 10px; color: var(--muted)';
 
 const at = (s: number) => ({ ti: Math.floor(s / (T * T)), tj: Math.floor(s / T) % T, kk: s % T });
 
@@ -104,17 +107,19 @@ export const mount: Mount = (el) => {
       }
     }
     parts.push(
-      `<text x="${bx}" y="${by - 5}" font-size="12" fill="var(--muted)">B (16×16)</text>`,
-      `<text x="${ax}" y="${ay - 5}" font-size="12" fill="var(--muted)">A (16×16)</text>`,
-      `<text x="${dx}" y="${dy - 5}" font-size="12" fill="var(--muted)">D = A·B (16×16)</text>`,
+      svgLabel(bx, by - 8, tex('B \\; (16 \\times 16)'), { style: LABEL }),
+      svgLabel(ax, ay - 8, tex('A \\; (16 \\times 16)'), { style: LABEL }),
+      svgLabel(dx, dy - 8, tex('D = AB \\; (16 \\times 16)'), { style: LABEL }),
     );
     svg.innerHTML = parts.join('');
 
-    if (!cur) read.textContent = 'Each square is one 4×4 tile. Press Play.';
+    if (!cur) read.innerHTML = texText('Each square is one $4 \\times 4$ tile. Press Play.');
     else
-      read.textContent =
+      read.innerHTML =
         `tensor-core ops: ${s} / ${TOTAL}   multiply-adds: ${s * TS ** 3} / ${TOTAL * TS ** 3}\n` +
-        `D tile (${cur.ti},${cur.tj}) += A(${cur.ti},${cur.kk}) · B(${cur.kk},${cur.tj})   k-step ${cur.kk + 1} of ${T}`;
+        texText(
+          `$D_{${cur.ti},${cur.tj}} \\mathrel{+}= A_{${cur.ti},${cur.kk}}\\, B_{${cur.kk},${cur.tj}}$   k-step ${cur.kk + 1} of ${T}`,
+        );
     btnStep.disabled = s >= TOTAL;
     btnPlay.textContent = timer ? 'Pause' : s >= TOTAL ? 'Replay' : 'Play';
   }

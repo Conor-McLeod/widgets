@@ -14,22 +14,22 @@ There are three ways to get a derivative out of a computer:
 
 - **Symbolic**: apply differentiation rules to the formula, like a computer algebra system. It's exact,
   but the expressions grow quickly, and it needs a formula. A program with loops and `if`s isn't one.
-- **Numeric**: evaluate the function twice and take the slope, (f(x+h) − f(x)) / h. It's easy, but
+- **Numeric**: evaluate the function twice and take the slope, <M t="(f(x+h) - f(x))/h" />. It's easy, but
   inexact, as the chart below shows.
 - **Automatic**: run the program and apply the chain rule to each operation as it happens. The result is exact
   up to floating-point rounding, and it costs a small constant multiple of running the program.
 
 ## Why not just take the slope?
 
-The derivative of sin at x = 1 is cos 1. The chart shows how far two finite-difference estimates land
-from it as the step h shrinks. Move along the chart to see the digits.
+The derivative of <M t="\sin x" /> at <M t="x = 1" /> is <M t="\cos 1" />. The chart shows how far two finite-difference estimates land
+from it as the step <M t="h" /> shrinks. Move along the chart to see the digits.
 
-<Widget src="finite-diff" height={420} caption="Error of finite-difference estimates of sin′(1), on log–log axes." />
+<Widget src="finite-diff" height={420} caption="Error of finite-difference estimates of $\sin'(1)$, on log–log axes." />
 
-From the right, the error falls as h shrinks. That's **truncation error**: a secant line only
-approximates the tangent. Somewhere around h = 10<sup>−8</sup> the error turns and starts climbing again.
-That's **rounding error**. f(x+h) and f(x) agree in almost every digit, so subtracting them leaves only
-a few significant bits, and dividing by a tiny h magnifies the noise. (The [float64](/float64) page shows
+From the right, the error falls as <M t="h" /> shrinks. That's **truncation error**: a secant line only
+approximates the tangent. Somewhere around <M t="h = 10^{-8}" /> the error turns and starts climbing again.
+That's **rounding error**. <M t="f(x+h)" /> and <M t="f(x)" /> agree in almost every digit, so subtracting them leaves only
+a few significant bits, and dividing by a tiny <M t="h" /> magnifies the noise. (The [float64](/float64) page shows
 why those bits run out.) The best forward difference is right to about 8 digits, and the best central difference to about 11.
 A float64 holds about 16.
 
@@ -39,21 +39,21 @@ estimate its gradient this way.
 ## A program is a chain of tiny functions
 
 Automatic differentiation starts from the fact that any numeric program, however tangled, executes as a
-sequence of elementary operations: `+`, `×`, `sin`, `ln`. We know the derivative of each one. Here's the
+sequence of elementary operations: <M t="+" />, <M t="\times" />, <M t="\sin" />, <M t="\ln" />. We know the derivative of each one. Here's the
 standard example from Baydin et al., *Automatic differentiation in machine learning: a survey*:
 
-> f(x₁, x₂) = ln x₁ + x₁x₂ − sin x₂
+<M block t="f(x_1, x_2) = \ln x_1 + x_1 x_2 - \sin x_2" />
 
 Written as an **evaluation trace**, one operation per line, it becomes the graph below. Each intermediate
-v<sub>i</sub> gets a name. The chain rule says that if you know how fast each argument of an operation is
+<M t="v_i" /> gets a name. The chain rule says that if you know how fast each argument of an operation is
 changing, you know how fast its result changes:
 
-> v̇ = Σ (∂v/∂a) · ȧ, summed over the arguments a
+<M block t="\dot v = \sum_a \frac{\partial v}{\partial a}\, \dot a \qquad \text{summed over the arguments } a" />
 
 ## Forward mode: carry the derivative along
 
-Pick one input, say x₁, and pin its **tangent** ẋ₁ = 1 (and ẋ₂ = 0). Then, as each value is computed,
-compute its tangent next to it using the rule above. By the time you reach y, ẏ is ∂y/∂x₁.
+Pick one input, say <M t="x_1" />, and pin its **tangent** <M t="\dot x_1 = 1" /> (and <M t="\dot x_2 = 0" />). Then, as each value is computed,
+compute its tangent next to it using the rule above. By the time you reach <M t="y" />, <M t="\dot y" /> is <M t="\partial y / \partial x_1" />.
 
 <Widget src="trace" height={560} />
 
@@ -61,8 +61,8 @@ Step through it. Each step needs only things you've already computed: the argume
 and a local derivative from a lookup table. Nothing is ever written down symbolically, so loops and
 branches are fine. The tangent just follows whichever path the program actually takes.
 
-Then switch the seed to x₂. You get ∂y/∂x₂, but only by running the whole pass again. **Forward mode gives
-one input's influence on every output per pass.** For a function of n inputs, the full gradient takes n
+Then switch the seed to <M t="x_2" />. You get <M t="\partial y / \partial x_2" />, but only by running the whole pass again. **Forward mode gives
+one input's influence on every output per pass.** For a function of <M t="n" /> inputs, the full gradient takes <M t="n" />
 passes, the same scaling as finite differences without the error.
 
 Forward mode is easy to implement with **dual numbers**: replace each number with a pair (value, tangent)
@@ -77,18 +77,18 @@ const sin = (a: Dual): Dual => ({ v: Math.sin(a.v), d: Math.cos(a.v) * a.d });
 ## Reverse mode: ask the question backwards
 
 Forward mode asks "if this input moves, how does everything move?" Reverse mode asks the opposite: "how much
-does the output care about each value?" That quantity is the **adjoint**, v̄ = ∂y/∂v. The output cares about
-itself exactly once, so ȳ = 1. Then the chain rule runs the other way. Each operation passes its adjoint back
+does the output care about each value?" That quantity is the **adjoint**, <M t="\bar v = \partial y / \partial v" />. The output cares about
+itself exactly once, so <M t="\bar y = 1" />. Then the chain rule runs the other way. Each operation passes its adjoint back
 to its arguments, scaled by the local derivative:
 
-> ā += v̄ · ∂v/∂a, for each argument a of v
+<M block t="\bar a \mathrel{+}= \bar v \cdot \frac{\partial v}{\partial a} \qquad \text{for each argument } a \text{ of } v" />
 
-The `+=` matters. A value used in two places, like x₁ (inside both ln and ×), collects a contribution from
+The `+=` matters. A value used in two places, like <M t="x_1" /> (inside both <M t="\ln" /> and <M t="\times" />), collects a contribution from
 each use.
 
 Switch the widget above to **Reverse mode**. It first runs an ordinary forward pass and keeps every value,
-because the local derivatives need them. Then it seeds ȳ = 1 and sweeps back. Faded adjoints are still
-waiting for contributions. Solid ones are final. Notice what you get at the end: ∂y/∂x₁ *and* ∂y/∂x₂, from
+because the local derivatives need them. Then it seeds <M t="\bar y = 1" /> and sweeps back. Faded adjoints are still
+waiting for contributions. Solid ones are final. Notice what you get at the end: <M t="\partial y / \partial x_1" /> *and* <M t="\partial y / \partial x_2" />, from
 one backward pass. The numbers match the forward-mode results.
 
 **Reverse mode gives every input's influence on one output per pass.** That's the asymmetry that matters.
@@ -98,15 +98,15 @@ gradient for roughly the cost of a couple of forward passes. The price is memory
 
 ## Backpropagation is reverse mode on a network
 
-A neuron is just another evaluation trace. Here's one tanh neuron with two inputs, a target t, and a squared
+A neuron is just another evaluation trace. Here's one tanh neuron with two inputs, a target <M t="t" />, and a squared
 error loss:
 
-> L = (tanh(w₁x₁ + w₂x₂ + b) − t)²
+<M block t="L = \left(\tanh(w_1 x_1 + w_2 x_2 + b) - t\right)^2" />
 
 It's the same widget with a different graph, starting in reverse mode. Step through the backward pass and
-watch L̄ = 1 flow back through the square, the subtraction, the tanh and the sums until it reaches the
-weights. The adjoints w̄₁, w̄₂ and b̄ are the gradient. **Gradient step** moves each weight a little
-against its gradient. Press it a few times and L drops toward zero.
+watch <M t="\bar L = 1" /> flow back through the square, the subtraction, the tanh and the sums until it reaches the
+weights. The adjoints <M t="\bar w_1" />, <M t="\bar w_2" /> and <M t="\bar b" /> are the gradient. **Gradient step** moves each weight a little
+against its gradient. Press it a few times and <M t="L" /> drops toward zero.
 
 <Widget src="neuron" height={640} />
 
@@ -116,7 +116,7 @@ record a tape of operations as your code runs and sweep it backwards when you ca
 `grad`.
 
 The whole engine fits on a screen. Each `Value` records its parents and its local derivatives. `backward()`
-puts the tape in topological order, seeds the output with 1, and applies `ā += v̄ · ∂v/∂a` from the end.
+puts the tape in topological order, seeds the output with 1, and applies <M t="\bar a \mathrel{+}= \bar v \cdot \partial v / \partial a" /> from the end.
 
 ```ts
 class Value {

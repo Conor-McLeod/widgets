@@ -10,55 +10,57 @@ The original Transformer put a **LayerNorm** after every sublayer. Most recent l
 Gemma and friends) use **RMSNorm** instead. It is LayerNorm with a step taken out, which raises the obvious
 question: what did that step do, and why is nobody missing it?
 
-For a vector *x* with *d* entries, LayerNorm centres it and then rescales it:
+For a vector <M t="x" /> with <M t="d" /> entries, LayerNorm centres it and then rescales it:
 
-> LayerNorm(x)<sub>i</sub> = (x<sub>i</sub> − μ) / σ · γ<sub>i</sub> + β<sub>i</sub>
+<M block t="\operatorname{LayerNorm}(x)_i = \frac{x_i - \mu}{\sigma}\, \gamma_i + \beta_i" />
 
 RMSNorm ([Zhang & Sennrich, 2019](https://arxiv.org/abs/1910.07467)) skips the centring and the bias.
 It only divides by the root-mean-square:
 
-> RMS(x) = √( (1/d) Σ x<sub>i</sub><sup>2</sup> + ε ),  RMSNorm(x)<sub>i</sub> = x<sub>i</sub> / RMS(x) · γ<sub>i</sub>
+<M block t="\operatorname{RMS}(x) = \sqrt{\frac{1}{d} \sum_i x_i^2 + \varepsilon}" />
 
-The widgets below leave γ at 1, since a learned per-channel gain just stretches the result afterwards.
+<M block t="\operatorname{RMSNorm}(x)_i = \frac{x_i}{\operatorname{RMS}(x)}\, \gamma_i" />
+
+The widgets below leave <M t="\gamma" /> at 1, since a learned per-channel gain just stretches the result afterwards.
 
 ## Scale goes, shape stays
 
-Drag the bars to edit an 8-dimensional input. The dashed blue lines mark ±RMS(x). Dividing by RMS(x) moves
-those lines to ±1, so the output always has an RMS of exactly 1. Things to try:
+Drag the bars to edit an 8-dimensional input. The dashed blue lines mark <M t="\pm\operatorname{RMS}(x)" />. Dividing by <M t="\operatorname{RMS}(x)" /> moves
+those lines to <M t="\pm 1" />, so the output always has an RMS of exactly 1. Things to try:
 
 - Press **× 2** or **÷ 2** a few times. The input grows and shrinks but the output doesn't change at all.
-  RMSNorm only cares about the *direction* of x, not its length.
+  RMSNorm only cares about the *direction* of <M t="x" />, not its length.
 - Press **+ 1**. Now the output does change. RMSNorm is not invariant to a shift. Switch to
   **LayerNorm** and press **+ 1** again: subtracting the mean (dashed red line) cancels the shift.
 - Try **all equal**. RMSNorm gives every entry 1. LayerNorm gives every entry 0, because once you subtract
   the mean nothing is left.
-- Try **outlier**. One big entry inflates RMS(x) and squeezes everything else towards zero. Both norms do this.
+- Try **outlier**. One big entry inflates <M t="\operatorname{RMS}(x)" /> and squeezes everything else towards zero. Both norms do this.
 
 <Widget src="vector" height={520} />
 
 So LayerNorm buys one extra property, invariance to adding a constant to every channel. The RMSNorm paper's
 bet was that the rescaling was what helped training, and the re-centring wasn't. Experiments backed this up:
-models trained just as well, and the norm got cheaper. It needs one reduction over the vector (Σx²) instead of
-two (the mean, then the variance around it), and there's no β to store. A normalization runs twice per layer,
+models trained just as well, and the norm got cheaper. It needs one reduction over the vector (<M t="\sum x_i^2" />) instead of
+two (the mean, then the variance around it), and there's no <M t="\beta" /> to store. A normalization runs twice per layer,
 so that saving adds up.
 
 ## The geometry
 
-With γ = 1, every RMSNorm output has Σy<sub>i</sub><sup>2</sup> = d. That means RMSNorm is just
-*project x radially onto the sphere of radius √d*. LayerNorm does two projections. First it subtracts
-the mean, which drops x onto the hyperplane where the entries sum to zero. Then it scales onto the same sphere.
+With <M t="\gamma = 1" />, every RMSNorm output has <M t="\sum y_i^2 = d" />. That means RMSNorm is just
+*project <M t="x" /> radially onto the sphere of radius <M t="\sqrt d" />*. LayerNorm does two projections. First it subtracts
+the mean, which drops <M t="x" /> onto the hyperplane where the entries sum to zero. Then it scales onto the same sphere.
 Its outputs live on the sphere *intersected with* that hyperplane, which has one dimension fewer.
 
-You can see this most clearly with d = 2, where the plane is easy to draw. Drag **x** around.
+You can see this most clearly with <M t="d = 2" />, where the plane is easy to draw. Drag **x** around.
 
-<Widget src="geometry" height={470} caption="A 2-D input. Blue: RMSNorm's output on the circle of radius √2. Red: LayerNorm's projection onto x₁ + x₂ = 0, then its output." />
+<Widget src="geometry" height={470} caption="A 2-D input. Blue: RMSNorm's output on the circle of radius $\sqrt 2$. Red: LayerNorm's projection onto $x_1 + x_2 = 0$, then its output." />
 
-In 2-D, RMSNorm can reach any point on the circle. LayerNorm can only output (1, −1) or (−1, 1). Centring
-removed one of the two degrees of freedom, and scaling removed the other. In a real model *d* is in the
+In 2-D, RMSNorm can reach any point on the circle. LayerNorm can only output <M t="(1, -1)" /> or <M t="(-1, 1)" />. Centring
+removed one of the two degrees of freedom, and scaling removed the other. In a real model <M t="d" /> is in the
 thousands, so losing one dimension is negligible. That's a good argument for why the centring step doesn't
 matter much: it barely changes where outputs can go, and the next linear layer can learn any offset it needs.
 
-Now turn up **ε** and drag x close to the origin. Without ε, a tiny input gets blown up onto the circle
-just like a big one. With ε, the denominator never drops below √ε, so small inputs stay small and division
-by zero is impossible. Real models use something like ε = 10<sup>−5</sup> or 10<sup>−6</sup>, which only matters
+Now turn up **<M t="\varepsilon" />** and drag <M t="x" /> close to the origin. Without <M t="\varepsilon" />, a tiny input gets blown up onto the circle
+just like a big one. With <M t="\varepsilon" />, the denominator never drops below <M t="\sqrt\varepsilon" />, so small inputs stay small and division
+by zero is impossible. Real models use something like <M t="\varepsilon = 10^{-5}" /> or <M t="10^{-6}" />, which only matters
 for vectors very close to zero.

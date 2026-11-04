@@ -1,8 +1,11 @@
 <script setup lang="ts">
 // Step through forward- or reverse-mode differentiation of a small computational graph.
 import { computed, reactive, ref, watch } from 'vue';
+import { tex, texText } from '~/math/tex';
+import Tex from '~/math/Tex.vue';
 import {
   OPS,
+  accent,
   adjoints,
   backwardOrder,
   evaluate,
@@ -62,23 +65,24 @@ function adjFinal(id: string) {
   return ev.value.consumers.get(id)!.every((c) => done.has(c));
 }
 
-const mark = (s: string, m: string) => s[0] + m + s.slice(1);
-const dot = (id: string) => mark(label(byId.get(id)!), '̇');
-const bar = (id: string) => mark(label(byId.get(id)!), '̄');
+// Everything below builds TeX. Explanation lines are text with `$...$` maths (see texText).
 const L = (id: string) => label(byId.get(id)!);
+const dot = (id: string) => accent('dot', L(id));
+const bar = (id: string) => accent('bar', L(id));
 const outName = g.outName;
-const varName = (id: string) => (id === g.output ? `${outName} = ${L(id)}` : L(id));
+/** Numbers for TeX: plain hyphen minus. */
+const num = (x: number) => fmt(x).replace('−', '-');
 
 /** Second line in each node: the tangent (forward) or adjoint (reverse). */
-function deriv(n: NodeDef): { text: string; final: boolean } | null {
+function deriv(n: NodeDef): { sym: string; value: string; final: boolean } | null {
   if (mode.value === 'forward') {
     if (!primalShown(n)) return null;
-    return { text: `${dot(n.id)} ${fmt(tan.value.get(n.id)!)}`, final: true };
+    return { sym: tex(dot(n.id)), value: fmt(tan.value.get(n.id)!), final: true };
   }
   if (backSteps.value === 0) return null;
   const touched = n.id === g.output || adj.value.get(n.id) !== 0 || adjFinal(n.id);
   if (!touched) return null;
-  return { text: `${bar(n.id)} ${fmt(adj.value.get(n.id)!)}`, final: adjFinal(n.id) };
+  return { sym: tex(bar(n.id)), value: fmt(adj.value.get(n.id)!), final: adjFinal(n.id) };
 }
 
 const explain = computed<string[]>(() => {
@@ -87,26 +91,26 @@ const explain = computed<string[]>(() => {
   if (mode.value === 'forward') {
     if (s === 0)
       return [
-        `Seed: ${params.map((p) => `${dot(p)} = ${p === seed.value ? 1 : 0}`).join(', ')}.`,
-        `Every tangent below answers "how fast does this move when ${seedName} moves?"`,
+        `Seed: $${params.map((p) => `${dot(p)} = ${p === seed.value ? 1 : 0}`).join(',\\; ')}$.`,
+        `Every tangent below answers "how fast does this move when $${seedName}$ moves?"`,
       ];
     const n = opNodes[s - 1];
     const a = n.args.map(L);
     const op = OPS[n.op];
     const p = ev.value.partial.get(n.id)!;
-    const terms = op.dText(a, L(n.id)).map((d, i) => `${d}·${dot(n.args[i])}`);
-    const nums = n.args.map((id, i) => `${fmt(p[i])}·${fmt(tan.value.get(id)!)}`);
+    const terms = op.dText(a, L(n.id)).map((d, i) => `(${d})\\,${dot(n.args[i])}`);
+    const nums = n.args.map((id, i) => `(${num(p[i])})(${num(tan.value.get(id)!)})`);
     return [
-      `${L(n.id)} = ${op.def(a)} = ${fmt(ev.value.value.get(n.id)!)}`,
-      `${dot(n.id)} = ${terms.join(' + ')} = ${nums.join(' + ')} = ${fmt(tan.value.get(n.id)!)}`,
+      `$${L(n.id)} = ${op.def(a)} = ${num(ev.value.value.get(n.id)!)}$`,
+      `$${dot(n.id)} = ${terms.join(' + ')} = ${nums.join(' + ')} = ${num(tan.value.get(n.id)!)}$`,
     ];
   }
   if (s === 0) return ['Reverse mode starts with an ordinary forward pass that records every value.'];
   if (s <= M) {
     const n = opNodes[s - 1];
-    return [`${L(n.id)} = ${OPS[n.op].def(n.args.map(L))} = ${fmt(ev.value.value.get(n.id)!)}`, 'Stored for the backward pass.'];
+    return [`$${L(n.id)} = ${OPS[n.op].def(n.args.map(L))} = ${num(ev.value.value.get(n.id)!)}$`, 'Stored for the backward pass.'];
   }
-  if (backSteps.value === 1) return [`Seed: ${mark(outName, '̄')} = ${bar(g.output)} = 1. Now sweep backwards.`];
+  if (backSteps.value === 1) return [`Seed: $${accent('bar', outName)} = ${bar(g.output)} = 1$. Now sweep backwards.`];
   const n = back[backSteps.value - 2];
   const op = OPS[n.op];
   const a = n.args.map(L);
@@ -115,21 +119,23 @@ const explain = computed<string[]>(() => {
   const vbar = adj.value.get(n.id)!;
   return n.args.map(
     (id, i) =>
-      `${bar(id)} += ${bar(n.id)} · ∂${L(n.id)}/∂${L(id)} = ${fmt(vbar)} · ${dTexts[i]} = ${fmt(vbar)} · ${fmt(p[i])} → ${fmt(adj.value.get(id)!)}`,
+      `$${bar(id)} \\mathrel{+}= ${bar(n.id)} \\cdot \\dfrac{\\partial ${L(n.id)}}{\\partial ${L(id)}} = (${num(vbar)})(${dTexts[i]}) = (${num(vbar)})(${num(p[i])}) \\;\\to\\; ${num(adj.value.get(id)!)}$`,
   );
 });
 
 const result = computed(() => {
-  const d = (wrt: string) => `∂${outName}/∂${L(wrt)}`;
+  const d = (wrt: string) => `\\partial ${outName} / \\partial ${L(wrt)}`;
   if (mode.value === 'forward') {
     if (step.value < M) return '';
     const others = params.filter((p) => p !== seed.value);
-    return `${d(seed.value)} = ${fmt(tan.value.get(g.output)!)}. ${
-      others.length ? `For ${others.map(d).join(', ')} you need ${others.length === 1 ? 'another pass' : `${others.length} more passes`}.` : ''
+    return `$${d(seed.value)} = ${num(tan.value.get(g.output)!)}$. ${
+      others.length
+        ? `For ${others.map((p) => `$${d(p)}$`).join(', ')} you need ${others.length === 1 ? 'another pass' : `${others.length} more passes`}.`
+        : ''
     }`;
   }
   if (step.value < total.value) return '';
-  return `One backward pass gave all of them: ${params.map((p) => `${d(p)} = ${fmt(adj.value.get(p)!)}`).join(', ')}.`;
+  return `One backward pass gave all of them: ${params.map((p) => `$${d(p)} = ${num(adj.value.get(p)!)}$`).join(', ')}.`;
 });
 
 // Layout ---------------------------------------------------------------------------------
@@ -143,7 +149,7 @@ const maxRow = Math.max(...g.nodes.map((n) => n.row));
 const W = PAD * 2 + maxCol * CW + NW;
 const H = PAD * 2 + maxRow * RH + NH;
 const pos = (n: NodeDef) => ({ x: PAD + n.col * CW, y: PAD + n.row * RH });
-const opSym: Record<string, string> = { add: '+', sub: '−', mul: '×', sin: 'sin', ln: 'ln', exp: 'exp', tanh: 'tanh', sq: '²' };
+const opSym: Record<string, string> = { add: '+', sub: '-', mul: '\\times', sin: '\\sin', ln: '\\ln', exp: '\\exp', tanh: '\\tanh', sq: '(\\cdot)^2' };
 
 const edges = computed(() =>
   opNodes.flatMap((n) =>
@@ -204,7 +210,7 @@ function descend() {
       </div>
       <div v-if="mode === 'forward'" class="gs-seg" role="group" aria-label="Seed">
         <span class="gs-muted">seed</span>
-        <button v-for="p in params" :key="p" :aria-pressed="seed === p" @click="seed = p">{{ L(p) }}</button>
+        <button v-for="p in params" :key="p" :aria-pressed="seed === p" @click="seed = p"><Tex :t="L(p)" /></button>
       </div>
     </div>
 
@@ -222,10 +228,18 @@ function descend() {
           :class="['gs-node', { input: n.op === 'input', shown: primalShown(n), active: activeId === n.id }]"
         >
           <rect :width="NW" :height="NH" rx="8" />
-          <text x="8" y="18" class="gs-name">{{ n.id === g.output ? `${outName}=${L(n.id)}` : L(n.id) }}</text>
-          <text v-if="n.op !== 'input'" :x="NW - 8" y="18" text-anchor="end" class="gs-op">{{ opSym[n.op] }}</text>
-          <text x="8" y="35" class="gs-val">{{ primalShown(n) ? fmt(ev.value.get(n.id)!) : '·' }}</text>
-          <text v-if="deriv(n)" x="8" y="51" :class="['gs-der', { partial: !deriv(n)!.final }]">{{ deriv(n)!.text }}</text>
+          <foreignObject x="6" y="2" :width="NW - 12" height="22">
+            <div class="gs-head">
+              <Tex class="gs-name" :t="n.id === g.output ? `${outName} = ${L(n.id)}` : L(n.id)" />
+              <Tex v-if="n.op !== 'input'" class="gs-op" :t="opSym[n.op]" />
+            </div>
+          </foreignObject>
+          <text x="8" y="37" class="gs-val">{{ primalShown(n) ? fmt(ev.value.get(n.id)!) : '·' }}</text>
+          <foreignObject v-if="deriv(n)" x="6" y="39" :width="NW - 12" height="18">
+            <div :class="['gs-der', { partial: !deriv(n)!.final }]">
+              <span v-html="deriv(n)!.sym" /> <span class="gs-der-val">{{ deriv(n)!.value }}</span>
+            </div>
+          </foreignObject>
         </g>
       </svg>
     </div>
@@ -243,13 +257,13 @@ function descend() {
     </div>
 
     <div class="gs-explain" aria-live="polite">
-      <p v-for="(line, i) in explain" :key="i">{{ line }}</p>
-      <p v-if="result" class="gs-result">{{ result }}</p>
+      <p v-for="(line, i) in explain" :key="i" v-html="texText(line)" />
+      <p v-if="result" class="gs-result" v-html="texText(result)" />
     </div>
 
     <div class="gs-inputs">
       <label v-for="n in inputNodes" :key="n.id">
-        <span>{{ L(n.id) }}</span>
+        <Tex :t="L(n.id)" />
         <input type="range" :min="n.min" :max="n.max" step="0.01" v-model.number="inputs[n.id]" />
         <output>{{ fmt(inputs[n.id]) }}</output>
       </label>
@@ -257,7 +271,7 @@ function descend() {
     <div v-if="trainable" class="gs-bar gs-train">
       <button @click="descend">Gradient step</button>
       <span class="gs-muted">
-        moves {{ params.map(L).join(', ') }} by −0.1 × gradient. {{ outName }} = {{ fmt(ev.value.get(g.output)!) }}
+        <Tex :text="`moves $${params.map(L).join(', ')}$ by $-0.1 \\times$ gradient. $${outName} = ${num(ev.value.get(g.output)!)}$`" />
       </span>
     </div>
   </div>
@@ -351,14 +365,18 @@ svg {
   stroke: var(--accent);
   stroke-width: 2;
 }
-.gs-name {
-  fill: var(--text);
-  font-size: 13px;
-  font-weight: 600;
+.gs-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+  color: var(--text);
 }
 .gs-op {
-  fill: var(--muted);
-  font-size: 12px;
+  color: var(--muted);
 }
 .gs-val {
   fill: var(--text);
@@ -368,26 +386,33 @@ svg {
   fill: var(--muted);
 }
 .gs-der {
-  fill: var(--accent);
-  font-size: 12px;
+  color: var(--accent);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.gs-der-val {
+  font-family: var(--mono);
+  font-size: 11.5px;
   font-weight: 600;
 }
 .gs-der.partial {
   opacity: 0.55;
+}
+.gs-der.partial .gs-der-val {
   font-weight: 400;
 }
 .gs-explain {
-  min-height: 4.2em;
+  min-height: 4.6em;
   padding: 0.5rem 0.75rem;
   border-radius: 8px;
   background: var(--bg);
   border: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+  overflow-x: auto;
 }
 .gs-explain p {
-  margin: 0.15rem 0;
+  margin: 0.2rem 0;
 }
 .gs-result {
   color: var(--accent);

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import Tex from '~/math/Tex.vue';
 
 // A toy single head: latent width DC, head width DH, a DR-wide RoPE key, and T tokens of context.
 // The newest token (position T-1) is the one asking the question.
@@ -91,7 +92,11 @@ const bar = (x: number) => {
 const tick = (x: number) => ({ left: `calc(${50 + (x / view.value.maxAbs) * 50}% - 1px)` });
 
 const keyLabel = computed(() =>
-  mode.value === 'plain' ? 'W_UK c' : mode.value === 'rope' ? 'R(t) W_UK c' : 'W_UK c ‖ k_R',
+  mode.value === 'plain'
+    ? 'W_{\\mathrm{UK}}\\, c'
+    : mode.value === 'rope'
+      ? 'R_t W_{\\mathrm{UK}}\\, c'
+      : 'W_{\\mathrm{UK}}\\, c \\,\\Vert\\, k_R',
 );
 const cost = computed(() => {
   const r = mode.value === 'decoupled' ? DR : 0;
@@ -108,20 +113,20 @@ const cost = computed(() => {
       <button class="shuffle" @click="seed++" title="New random weights and tokens">Shuffle</button>
     </div>
     <label class="theta" :class="{ off: mode === 'plain' }">
-      <span>RoPE angle θ</span>
+      <span>RoPE angle <Tex t="\theta" /></span>
       <input v-model.number="theta" type="range" min="0" max="1.5" step="0.01" :disabled="mode === 'plain'" />
       <output>{{ theta.toFixed(2) }}</output>
     </label>
 
     <div class="queries">
       <div>
-        <span class="lbl">query{{ mode === 'plain' ? ' q' : ' R(n) q' }}</span>
+        <span class="lbl">query <Tex :t="mode === 'plain' ? 'q' : 'R_n q'" /></span>
         <span class="cells">
           <i v-for="(x, i) in view.query" :key="i" :style="cell(x)" :class="{ r: isR(i, view.query.length) }" :title="x.toFixed(3)" />
         </span>
       </div>
       <div>
-        <span class="lbl">absorbed q̃ = W_UKᵀ q{{ mode === 'decoupled' ? ' ‖ q_R' : '' }}</span>
+        <span class="lbl">absorbed <Tex :t="`\\tilde q = W_{\\mathrm{UK}}^\\top q${mode === 'decoupled' ? ' \\,\\Vert\\, q_R' : ''}`" /></span>
         <span class="cells">
           <i v-for="(x, i) in view.qTilde" :key="i" :style="cell(x)" :class="{ r: isR(i, view.qTilde.length) }" :title="x.toFixed(3)" />
         </span>
@@ -130,9 +135,9 @@ const cost = computed(() => {
 
     <div class="table" role="table" aria-label="Per-token cache, rebuilt keys and attention scores">
       <div class="tr th" role="row">
-        <span>t</span>
+        <span><Tex t="t" /></span>
         <span>cached</span>
-        <span>key = {{ keyLabel }}</span>
+        <span>key <Tex :t="`= ${keyLabel}`" /></span>
         <span>score</span>
       </div>
       <div v-for="r in view.rows" :key="r.t" class="tr" role="row" :class="{ bad: !r.ok }">
@@ -154,9 +159,9 @@ const cost = computed(() => {
     </div>
     <div class="legend">
       <span><span class="sw fill" /> score from rebuilt keys</span>
-      <span><span class="sw tick" /> score from absorbed q̃</span>
+      <span><span class="sw tick" /> score from absorbed <Tex t="\tilde q" /></span>
       <span v-if="mode === 'decoupled'"><span class="sw r" /> RoPE part</span>
-      <span>* the token asking (n = {{ N }})</span>
+      <span>* the token asking <Tex :t="`(n = ${N})`" /></span>
     </div>
 
     <p class="status" aria-live="polite">
@@ -166,7 +171,7 @@ const cost = computed(() => {
       </template>
       <template v-else>
         The absorbed path is wrong on {{ view.bad }} of {{ T }} tokens. The rotation between query and key is
-        R(t − n), different for every cached token, so no single q̃ can carry it.
+        <Tex t="R_{t-n}" />, different for every cached token, so no single <Tex t="\tilde q" /> can carry it.
       </template>
     </p>
   </div>
@@ -333,6 +338,7 @@ button[aria-pressed='true'] {
   gap: 0.3rem;
 }
 .sw {
+  position: static;
   display: inline-block;
   width: 0.9rem;
   height: 0.7rem;

@@ -2,6 +2,7 @@
 // A rolling-buffer KV cache: with window W, token at position p is written to slot p mod W,
 // overwriting whatever fell out of the window. Memory stays at W slots however long the text gets.
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import Tex from '~/math/Tex.vue';
 
 const WORDS = (
   'the cat sat on the mat and watched the rain fall past the window while the kettle ' +
@@ -61,7 +62,7 @@ onBeforeUnmount(stop);
   <div class="swc">
     <div class="ctl">
       <label class="range">
-        <span>window W</span>
+        <span>window <Tex t="W" /></span>
         <input v-model.number="W" type="range" min="2" max="8" />
         <output>{{ W }}</output>
       </label>
@@ -76,7 +77,7 @@ onBeforeUnmount(stop);
       </span>
     </div>
 
-    <p class="label">cache: {{ W }} slots, token at position p goes to slot p mod {{ W }}</p>
+    <p class="label">cache: {{ W }} slots, token at position <Tex t="p" /> goes to slot <Tex :t="`p \\bmod ${W}`" /></p>
     <div class="slots" :style="{ gridTemplateColumns: `repeat(${W}, minmax(0, 1fr))` }">
       <div v-for="sl in slots" :key="sl.s" :class="['slot', { cur: sl.s === newest, next: sl.s === nextSlot && t > 0 }]">
         <span class="idx">slot {{ sl.s }}</span>

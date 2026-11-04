@@ -8,8 +8,8 @@ draft: false
 
 A transformer's softmax attention keeps every past key and value around (the KV cache) and
 compares each new query against all of them. Memory grows with the context, and so does the
-work per generated token. Linear attention swaps the cache for a fixed-size matrix **S**, the
-*state*. Each token writes into it, and each query reads out of it as **o** = **S**ᵀ**q**.
+work per generated token. Linear attention swaps the cache for a fixed-size matrix <M t="\mathbf{S}" />, the
+*state*. Each token writes into it, and each query reads out of it as <M t="\mathbf{o} = \mathbf{S}^\top \mathbf{q}" />.
 Generating the millionth token costs the same as generating the tenth.
 
 The question is what you lose by squeezing an ever-growing context into a few thousand numbers.
@@ -19,23 +19,23 @@ the *delta rule* decides how to write, and a *per-channel forget gate* decides w
 
 ## Writing: add, or correct?
 
-Think of **S** as a key → value lookup table stored as a matrix. Plain linear attention writes by
+Think of <M t="\mathbf{S}" /> as a key → value lookup table stored as a matrix. Plain linear attention writes by
 adding the outer product of key and value:
 
-> **S** ← **S** + **k** **v**ᵀ
+<M block t="\mathbf{S} \leftarrow \mathbf{S} + \mathbf{k} \mathbf{v}^\top" />
 
-Reading with the same key gives back **v**, plus every other value whose key overlaps with it.
+Reading with the same key gives back <M t="\mathbf{v}" />, plus every other value whose key overlaps with it.
 Write the same key twice and you get the sum of both values, not the latest one.
 
-The delta rule reads before it writes. It asks the memory what it currently holds for **k**,
-and writes only the difference, scaled by a learned write strength β:
+The delta rule reads before it writes. It asks the memory what it currently holds for <M t="\mathbf{k}" />,
+and writes only the difference, scaled by a learned write strength <M t="\beta" />:
 
-> **S** ← **S** + β **k** (**v** − **S**ᵀ**k**)ᵀ
+<M block t="\mathbf{S} \leftarrow \mathbf{S} + \beta\, \mathbf{k} \left(\mathbf{v} - \mathbf{S}^\top \mathbf{k}\right)^\top" />
 
-With β = 1 and a unit-length key, the memory returns exactly **v** for **k** right after the
+With <M t="\beta = 1" /> and a unit-length key, the memory returns exactly <M t="\mathbf{v}" /> for <M t="\mathbf{k}" /> right after the
 write. The old association is replaced instead of blended.
 
-Below, five writes go into a 3×3 state. Values are colours, so wrong reads look muddy. Click
+Below, five writes go into a <M t="3 \times 3" /> state. Values are colours, so wrong reads look muddy. Click
 through the steps under each rule.
 
 <Widget src="recall" height={420} />
@@ -51,28 +51,28 @@ Things to try:
   apart. The delta rule still nails the key it just wrote, but earlier keys pick up small errors
   from later writes. Real models put many more items through a 128-dimensional key space than
   it has dimensions, so this is the normal case, not the edge case.
-- Lower **β**. The delta rule only moves part of the way to the new value, which the model can
+- Lower **<M t="\beta" />**. The delta rule only moves part of the way to the new value, which the model can
   use to say "this token is not worth fully committing".
 
 ## Forgetting: one clock or many?
 
 The delta rule can only edit along the direction of the key it's writing. Anything stored
 along directions that no recent key touches stays forever, stale or not. So Gated DeltaNet
-adds a forget gate: before each write, multiply the state by α ∈ (0, 1]. α is computed from the
+adds a forget gate: before each write, multiply the state by <M t="\alpha \in (0, 1]" />. <M t="\alpha" /> is computed from the
 current token, so the model can choose when to forget, but it's **one number per head**: every
 key channel fades at the same rate.
 
-KDA's change is to make α a **vector**, one rate per key channel:
+KDA\'s change is to make <M t="\alpha" /> a **vector**, one rate per key channel:
 
-> **S**<sub>t</sub> = (**I** − β<sub>t</sub> **k**<sub>t</sub> **k**<sub>t</sub>ᵀ) Diag(**α**<sub>t</sub>) **S**<sub>t−1</sub> + β<sub>t</sub> **k**<sub>t</sub> **v**<sub>t</sub>ᵀ
+<M block t="\mathbf{S}_t = \left(\mathbf{I} - \beta_t \mathbf{k}_t \mathbf{k}_t^\top\right) \operatorname{Diag}(\boldsymbol{\alpha}_t)\, \mathbf{S}_{t-1} + \beta_t \mathbf{k}_t \mathbf{v}_t^\top" />
 
 Read right to left: decay each channel by its own rate, erase along the new key, write the new
 value. (Expand the brackets and the middle part is the delta rule from above.)
 
-What a per-channel rate buys you is easiest to see from the read side. Something written L
-tokens ago has been multiplied by α<sub>i</sub> L times in channel i. A query that puts its weight
+What a per-channel rate buys you is easiest to see from the read side. Something written <M t="L" />
+tokens ago has been multiplied by <M t="\alpha_i" /> <M t="L" /> times in channel <M t="i" />. A query that puts its weight
 on fast-decaying channels mostly hears recent tokens. One that leans on slow channels hears the
-distant past. The chart sets the decay rates by half-life and keeps α constant over time so the
+distant past. The chart sets the decay rates by half-life and keeps <M t="\alpha" /> constant over time so the
 shape is easy to read. The model sets them per token.
 
 <Widget src="horizons" height={460} caption="Read weight by distance, assuming nothing later overwrote the token. Dashed lines are individual channels." />
@@ -103,5 +103,5 @@ mixture-of-experts model with 3B parameters active per token.
 The recurrence above is written one token at a time, which is how decoding works. Training
 can't afford a sequential loop over a long sequence, so KDA uses a chunkwise algorithm: tokens
 are processed in blocks, with matrix multiplies inside each block and the recurrence only
-between blocks. Tying the per-channel decay to the same **k** that appears in the erase term
+between blocks. Tying the per-channel decay to the same <M t="\mathbf{k}" /> that appears in the erase term
 keeps that computation cheaper than a general diagonal-plus-low-rank update.

@@ -11,7 +11,7 @@ export interface NodeDef {
   /** Grid position in the diagram: column, row (fractional rows are fine). */
   col: number;
   row: number;
-  /** Display name for inputs, e.g. "x₁" or "w". */
+  /** Display name for inputs, as TeX, e.g. "x_1" or "w". */
   name?: string;
   /** Slider range for inputs. */
   min?: number;
@@ -32,31 +32,32 @@ interface OpInfo {
   f: (a: number[]) => number;
   /** Local partial derivatives ∂v/∂aᵢ, given argument values and this node's own value. */
   d: (a: number[], v: number) => number[];
-  /** Definition in terms of argument names, for the trace table. */
+  /** Definition in terms of argument names (TeX), for the step explanations. */
   def: (a: string[]) => string;
-  /** Local partials as formulas in argument names (and own name `v`). */
+  /** Local partials as TeX formulas in argument names (and own name `v`). */
   dText: (a: string[], v: string) => string[];
 }
 
 export const OPS: Record<Op, OpInfo> = {
   input: { f: () => NaN, d: () => [], def: () => 'input', dText: () => [] },
   add: { f: ([a, b]) => a + b, d: () => [1, 1], def: ([a, b]) => `${a} + ${b}`, dText: () => ['1', '1'] },
-  sub: { f: ([a, b]) => a - b, d: () => [1, -1], def: ([a, b]) => `${a} − ${b}`, dText: () => ['1', '−1'] },
-  mul: { f: ([a, b]) => a * b, d: ([a, b]) => [b, a], def: ([a, b]) => `${a} × ${b}`, dText: ([a, b]) => [b, a] },
-  sin: { f: ([a]) => Math.sin(a), d: ([a]) => [Math.cos(a)], def: ([a]) => `sin ${a}`, dText: ([a]) => [`cos ${a}`] },
-  ln: { f: ([a]) => Math.log(a), d: ([a]) => [1 / a], def: ([a]) => `ln ${a}`, dText: ([a]) => [`1/${a}`] },
-  exp: { f: ([a]) => Math.exp(a), d: (_, v) => [v], def: ([a]) => `exp ${a}`, dText: (_, v) => [v] },
-  tanh: { f: ([a]) => Math.tanh(a), d: (_, v) => [1 - v * v], def: ([a]) => `tanh ${a}`, dText: (_, v) => [`1 − ${v}²`] },
-  sq: { f: ([a]) => a * a, d: ([a]) => [2 * a], def: ([a]) => `${a}²`, dText: ([a]) => [`2${a}`] },
+  sub: { f: ([a, b]) => a - b, d: () => [1, -1], def: ([a, b]) => `${a} - ${b}`, dText: () => ['1', '-1'] },
+  mul: { f: ([a, b]) => a * b, d: ([a, b]) => [b, a], def: ([a, b]) => `${a} \\times ${b}`, dText: ([a, b]) => [b, a] },
+  sin: { f: ([a]) => Math.sin(a), d: ([a]) => [Math.cos(a)], def: ([a]) => `\\sin ${a}`, dText: ([a]) => [`\\cos ${a}`] },
+  ln: { f: ([a]) => Math.log(a), d: ([a]) => [1 / a], def: ([a]) => `\\ln ${a}`, dText: ([a]) => [`1/${a}`] },
+  exp: { f: ([a]) => Math.exp(a), d: (_, v) => [v], def: ([a]) => `\\exp ${a}`, dText: (_, v) => [v] },
+  tanh: { f: ([a]) => Math.tanh(a), d: (_, v) => [1 - v * v], def: ([a]) => `\\tanh ${a}`, dText: (_, v) => [`1 - ${v}^2`] },
+  sq: { f: ([a]) => a * a, d: ([a]) => [2 * a], def: ([a]) => `${a}^2`, dText: ([a]) => [`2${a}`] },
 };
 
-/** Subscript-style label: v-1 → v₋₁, v3 → v₃. */
+/** TeX label: v-1 → v_{-1}, v3 → v_{3}. */
 export function label(n: NodeDef): string {
   if (n.name) return n.name;
-  const sub = '₀₁₂₃₄₅₆₇₈₉';
-  const num = n.id.slice(1).replace(/-/, '₋').replace(/\d/g, (d) => sub[Number(d)]);
-  return 'v' + num;
+  return `v_{${n.id.slice(1)}}`;
 }
+
+/** Put an accent on a label's base letter, not its subscript: accent('dot', 'x_1') → \dot{x}_1. */
+export const accent = (cmd: string, s: string) => s.replace(/^([^_]+)/, `\\${cmd}{$1}`);
 
 export interface Evaluated {
   order: NodeDef[]; // topological (the definition order is required to be topological)
@@ -135,8 +136,8 @@ export const BAYDIN: GraphDef = {
   output: 'v5',
   outName: 'y',
   nodes: [
-    { id: 'v-1', op: 'input', args: [], col: 0, row: 0, name: 'x₁', min: 0.2, max: 4, value: 2 },
-    { id: 'v0', op: 'input', args: [], col: 0, row: 2, name: 'x₂', min: -4, max: 6, value: 5 },
+    { id: 'v-1', op: 'input', args: [], col: 0, row: 0, name: 'x_1', min: 0.2, max: 4, value: 2 },
+    { id: 'v0', op: 'input', args: [], col: 0, row: 2, name: 'x_2', min: -4, max: 6, value: 5 },
     { id: 'v1', op: 'ln', args: ['v-1'], col: 1, row: 0 },
     { id: 'v2', op: 'mul', args: ['v-1', 'v0'], col: 1, row: 1 },
     { id: 'v3', op: 'sin', args: ['v0'], col: 1, row: 2 },
@@ -151,10 +152,10 @@ export const NEURON: GraphDef = {
   outName: 'L',
   params: ['w1', 'w2', 'b'],
   nodes: [
-    { id: 'x1', op: 'input', args: [], col: 0, row: 0, name: 'x₁', min: -2, max: 2, value: 1.5 },
-    { id: 'w1', op: 'input', args: [], col: 0, row: 1, name: 'w₁', min: -2, max: 2, value: 0.8 },
-    { id: 'x2', op: 'input', args: [], col: 0, row: 2, name: 'x₂', min: -2, max: 2, value: -1 },
-    { id: 'w2', op: 'input', args: [], col: 0, row: 3, name: 'w₂', min: -2, max: 2, value: 0.4 },
+    { id: 'x1', op: 'input', args: [], col: 0, row: 0, name: 'x_1', min: -2, max: 2, value: 1.5 },
+    { id: 'w1', op: 'input', args: [], col: 0, row: 1, name: 'w_1', min: -2, max: 2, value: 0.8 },
+    { id: 'x2', op: 'input', args: [], col: 0, row: 2, name: 'x_2', min: -2, max: 2, value: -1 },
+    { id: 'w2', op: 'input', args: [], col: 0, row: 3, name: 'w_2', min: -2, max: 2, value: 0.4 },
     { id: 'b', op: 'input', args: [], col: 0, row: 4, name: 'b', min: -2, max: 2, value: 0.1 },
     { id: 't', op: 'input', args: [], col: 4, row: 4, name: 't', min: -1, max: 1, value: -0.5 },
     { id: 'v1', op: 'mul', args: ['x1', 'w1'], col: 1, row: 0.5 },

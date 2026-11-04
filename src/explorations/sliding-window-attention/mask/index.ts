@@ -2,6 +2,7 @@
 // Compare full causal attention with a sliding window, optionally keeping a few "sink" tokens
 // at the start visible to everyone. Hover or tap a row to see what that query can look at.
 import type { Mount } from '~/widget';
+import { tex } from '~/math/tex';
 
 const N = 24;
 const SIZE = 400;
@@ -18,7 +19,7 @@ export const mount: Mount = (el) => {
           <button data-mode="full">full causal</button>
           <button data-mode="window">sliding window</button>
         </div>
-        <label class="swm-range"><span>window W</span><input class="swm-w" type="range" min="1" max="${N}" value="6" /><output></output></label>
+        <label class="swm-range"><span>window ${tex('W')}</span><input class="swm-w" type="range" min="1" max="${N}" value="6" /><output></output></label>
         <label class="swm-range"><span>sink tokens</span><input class="swm-s" type="range" min="0" max="4" value="0" /><output></output></label>
       </div>
       <svg class="swm-svg" viewBox="0 0 ${SIZE} ${SIZE}" role="img" aria-label="Attention mask: rows are queries, columns are keys"></svg>
@@ -131,7 +132,7 @@ export const mount: Mount = (el) => {
     const kv = mode === 'full' ? N : Math.min(N, w + s);
     stats.innerHTML = `
       <dt>scores computed</dt><dd>${computed} of ${full} for full causal (${Math.round((100 * computed) / full)}%)</dd>
-      <dt>keys/values to keep</dt><dd>${kv} of ${N}${mode === 'window' ? ' — constant once the sequence is longer than W' : ' — grows with every token'}</dd>`;
+      <dt>keys/values to keep</dt><dd>${kv} of ${N}${mode === 'window' ? ` — constant once the sequence is longer than ${tex('W')}` : ' — grows with every token'}</dd>`;
   }
 
   function pick(ev: PointerEvent) {

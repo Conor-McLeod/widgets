@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
+import Tex from '~/math/Tex.vue';
 
 const D = 8;
 const IN_MAX = 4; // input chart spans [-IN_MAX, IN_MAX]
@@ -105,10 +106,10 @@ const presets: { label: string; title: string; run: () => void }[] = [
     </div>
 
     <div class="label">
-      <span>input <i>x</i> <span class="hint">· drag the bars</span></span>
+      <span>input <Tex t="x" /> <span class="hint">· drag the bars</span></span>
       <span class="stats">
-        RMS = <b>{{ fmt(rms) }}</b>
-        <template v-if="showLayer"> · μ = <b>{{ fmt(mean) }}</b> · σ = <b>{{ fmt(std) }}</b></template>
+        <Tex t="\operatorname{RMS}(x) =" /> <b>{{ fmt(rms) }}</b>
+        <template v-if="showLayer"> · <Tex t="\mu =" /> <b>{{ fmt(mean) }}</b> · <Tex t="\sigma =" /> <b>{{ fmt(std) }}</b></template>
       </span>
     </div>
     <svg
@@ -142,11 +143,11 @@ const presets: { label: string; title: string; run: () => void }[] = [
     </svg>
 
     <div class="label">
-      <span>output <i>y</i></span>
+      <span>output <Tex t="y" /></span>
       <span class="stats">
-        <template v-if="showRms">RMS of y = <b>{{ fmt(Math.sqrt(yRms.reduce((a, b) => a + b * b, 0) / D)) }}</b></template>
+        <template v-if="showRms"><Tex t="\operatorname{RMS}(y) =" /> <b>{{ fmt(Math.sqrt(yRms.reduce((a, b) => a + b * b, 0) / D)) }}</b></template>
         <template v-if="mode === 'both'"> · </template>
-        <template v-if="showLayer">mean of LN y = <b>{{ fmt(yLayer.reduce((a, b) => a + b, 0) / D) }}</b></template>
+        <template v-if="showLayer">mean of LayerNorm <Tex t="y =" /> <b>{{ fmt(yLayer.reduce((a, b) => a + b, 0) / D) }}</b></template>
       </span>
     </div>
     <svg class="chart" :viewBox="`0 0 ${W} ${H}`" role="img" aria-label="Normalized output vector">
@@ -177,16 +178,16 @@ const presets: { label: string; title: string; run: () => void }[] = [
     </svg>
 
     <div class="legend">
-      <span v-if="showRms"><i class="sw out"></i>x / RMS(x)</span>
-      <span v-if="showLayer"><i class="sw ln"></i>(x − μ) / σ</span>
-      <span v-if="showRms"><i class="sw ref-rms"></i>±RMS → ±1</span>
-      <span v-if="showLayer"><i class="sw ref-mean"></i>mean μ</span>
+      <span v-if="showRms"><i class="sw out"></i><Tex t="x / \operatorname{RMS}(x)" /></span>
+      <span v-if="showLayer"><i class="sw ln"></i><Tex t="(x - \mu) / \sigma" /></span>
+      <span v-if="showRms"><i class="sw ref-rms"></i><Tex t="\pm\operatorname{RMS} \to \pm 1" /></span>
+      <span v-if="showLayer"><i class="sw ref-mean"></i>mean <Tex t="\mu" /></span>
     </div>
 
     <table class="vals">
       <tbody>
         <tr>
-          <th>x</th>
+          <th><Tex t="x" /></th>
           <td v-for="(v, i) in x" :key="i">{{ fmt(v, 1) }}</td>
         </tr>
         <tr v-if="showRms">
