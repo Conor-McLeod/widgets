@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import Tex from '~/math/Tex.vue';
 import { useExpertColors } from '../palette';
 import { MoE, rng, sample } from './sim';
 
@@ -140,7 +141,7 @@ const lossPath = computed(() => {
       </button>
       <button @click="reset">reset</button>
       <label>
-        <span>balancing loss α</span>
+        <span>balancing loss <Tex t="\alpha" /></span>
         <input type="range" min="0" max="0.1" step="0.01" v-model.number="alpha" />
         <output>{{ alpha.toFixed(2) }}</output>
       </label>

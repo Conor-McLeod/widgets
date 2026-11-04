@@ -73,6 +73,12 @@ const { title, bare = false } = Astro.props;
     font-family: var(--mono);
     font-size: 0.9em;
   }
+  /* Wide display maths scrolls on its own instead of widening the page. */
+  .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.15em 0;
+  }
   header.site {
     max-width: 960px;
     margin: 0 auto;

@@ -1,6 +1,7 @@
 // Vanilla widget: a long dot product of FP16 inputs, summed with an FP16 accumulator vs an FP32 one.
 // The FP16 running sum stalls once its spacing outgrows the products being added.
 import type { Mount } from '~/widget';
+import { svgLabel, tex } from '~/math/tex';
 
 /** Round to the nearest IEEE half-precision value (ties to even), including subnormals and overflow. */
 function fp16(x: number): number {
@@ -102,14 +103,20 @@ export const mount: Mount = (el) => {
       parts.push(
         `<line x1="${L}" x2="${W - R}" y1="${y(p)}" y2="${y(p)}" stroke="var(--border)" />`,
         `<text x="${L - 6}" y="${y(p) + 4}" text-anchor="end" font-size="12" fill="var(--muted)">${p}</text>`,
-        `<text x="${W - R - 4}" y="${y(p) - 4}" text-anchor="end" font-size="11" fill="var(--muted)">FP16 gap ${ulp >= 1 ? ulp : `1/${1 / ulp}`}</text>`,
+        svgLabel(W - R - 4, y(p) - 10, `FP16 gap ${tex(ulp >= 1 ? String(ulp) : `1/${1 / ulp}`)}`, {
+          anchor: 'end',
+          style: 'font-size: 11px; color: var(--muted)',
+        }),
       );
     }
     parts.push(
       `<line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" stroke="var(--muted)" />`,
       `<text x="${L - 6}" y="${y(0) + 4}" text-anchor="end" font-size="12" fill="var(--muted)">0</text>`,
-      `<text x="${L}" y="${H - 8}" font-size="12" fill="var(--muted)">k = 0</text>`,
-      `<text x="${W - R}" y="${H - 8}" text-anchor="end" font-size="12" fill="var(--muted)">k = ${K.toLocaleString('en-US')}</text>`,
+      svgLabel(L, H - 12, tex('k = 0'), { style: 'font-size: 12px; color: var(--muted)' }),
+      svgLabel(W - R, H - 12, tex(`k = ${K.toLocaleString('en-US').replace(/,/g, '{,}')}`), {
+        anchor: 'end',
+        style: 'font-size: 12px; color: var(--muted)',
+      }),
       `<polyline points="${line(exact)}" fill="none" stroke="var(--muted)" stroke-width="5" stroke-opacity=".35" stroke-linejoin="round" />`,
       `<polyline points="${line(f32)}" fill="none" stroke="var(--accent)" stroke-width="1.75" stroke-linejoin="round" />`,
       `<polyline points="${line(f16)}" fill="none" stroke="var(--danger)" stroke-width="1.75" stroke-linejoin="round" />`,

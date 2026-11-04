@@ -14,8 +14,11 @@ interface Props {
   height?: number;
   /** Fill the whole viewport (used by the bare /w/ route). */
   fill?: boolean;
+  /** Plain text; `$...$` spans are rendered as maths. */
   caption?: string;
 }
+
+import { texText } from '~/math/tex';
 
 const { src, height = 240, fill = false, caption } = Astro.props;
 const id = src.includes('/') ? src : `${Astro.params.slug}/${src}`;
@@ -28,7 +31,7 @@ const id = src.includes('/') ? src : `${Astro.params.slug}/${src}`;
     style={fill ? undefined : `min-height: ${height}px`}
   >
   </div>
-  {caption && <figcaption>{caption}</figcaption>}
+  {caption && <figcaption set:html={texText(caption, { strict: true })} />}
   {!fill && <a class="widget-pop" href={`/w/${id}`} title="Open on its own">↗</a>}
 </figure>
 

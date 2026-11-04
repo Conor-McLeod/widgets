@@ -2,6 +2,7 @@
 // RMSNorm pushes every point radially onto the circle of radius √d = √2.
 // LayerNorm first projects onto the line x₁ + x₂ = 0, then scales, so it lands on one of two points.
 import type { Mount } from '~/widget';
+import { svgLabel, tex } from '~/math/tex';
 
 const D = 2;
 const SIZE = 320; // viewBox is SIZE × SIZE, centred on the origin
@@ -41,7 +42,7 @@ export const mount: Mount = (el) => {
           <button data-mode="both">both</button>
         </div>
         <label class="rg-eps">
-          <span>ε</span>
+          <span>${tex('\\varepsilon')}</span>
           <input type="range" min="0" max="6" step="1" value="0" />
           <output></output>
         </label>
@@ -63,7 +64,7 @@ export const mount: Mount = (el) => {
       .rg-eps output { font-family: var(--mono); color: var(--text); font-size: .82rem; min-width: 3.5rem; }
       .rg-svg { display: block; width: 100%; max-width: 420px; height: auto; margin: 0 auto; touch-action: none; cursor: grab; }
       .rg-svg:active { cursor: grabbing; }
-      .rg-readout { margin: .5rem 0 0; font-family: var(--mono); font-size: .8rem; line-height: 1.6; min-height: 3.2em; white-space: pre-wrap; }
+      .rg-readout { margin: .5rem 0 0; font-size: .82rem; line-height: 1.7; min-height: 3.4em; overflow-x: auto; }
       .rg-readout .x { color: var(--text); }
       .rg-readout .r { color: var(--accent); }
       .rg-readout .l { color: var(--danger); }
@@ -82,7 +83,7 @@ export const mount: Mount = (el) => {
 
   function draw() {
     const e = epsilon();
-    epsOut.textContent = e === 0 ? '0' : `1e${Math.round(Math.log10(e))}`;
+    epsOut.innerHTML = tex(e === 0 ? '0' : `10^{${Math.round(Math.log10(e))}}`);
     const showR = mode !== 'layer';
     const showL = mode !== 'rms';
     const parts: string[] = [];
@@ -96,8 +97,8 @@ export const mount: Mount = (el) => {
       );
     }
     parts.push(
-      `<text x="${SIZE - 6}" y="${py(0) - 6}" text-anchor="end" font-size="12" fill="var(--muted)">x₁</text>`,
-      `<text x="${px(0) + 6}" y="14" font-size="12" fill="var(--muted)">x₂</text>`,
+      svgLabel(SIZE - 6, py(0) - 12, tex('x_1'), { anchor: 'end', width: 30, style: 'font-size: 12px; color: var(--muted)' }),
+      svgLabel(px(0) + 6, 12, tex('x_2'), { width: 30, style: 'font-size: 12px; color: var(--muted)' }),
     );
 
     // Where outputs can live.
@@ -116,7 +117,7 @@ export const mount: Mount = (el) => {
       }
     }
 
-    const lines: string[] = [`<span class="x">x = ${pt(x)}</span>`];
+    const lines: string[] = [`<span class="x">${tex(`x = ${pt(x)}`)}</span>`];
 
     if (showR) {
       const y = rmsNorm(x, e);
@@ -124,7 +125,9 @@ export const mount: Mount = (el) => {
         `<line x1="${px(0)}" y1="${py(0)}" x2="${px(x[0])}" y2="${py(x[1])}" stroke="var(--accent)" stroke-width="1" opacity=".35" />`,
         `<circle cx="${px(y[0])}" cy="${py(y[1])}" r="6" fill="var(--accent)" />`,
       );
-      lines.push(`<span class="r">RMSNorm(x) = ${pt(y)}   ‖y‖ = ${f(Math.hypot(...y))}</span>`);
+      lines.push(
+        `<span class="r">${tex(`\\operatorname{RMSNorm}(x) = ${pt(y)} \\qquad \\lVert y \\rVert = ${f(Math.hypot(...y))}`)}</span>`,
+      );
     }
     if (showL) {
       const { centred, out } = layerNorm(x, e);
@@ -134,14 +137,16 @@ export const mount: Mount = (el) => {
         `<line x1="${px(centred[0])}" y1="${py(centred[1])}" x2="${px(out[0])}" y2="${py(out[1])}" stroke="var(--danger)" stroke-width="1" opacity=".5" />`,
         `<circle cx="${px(out[0])}" cy="${py(out[1])}" r="5" fill="var(--danger)" />`,
       );
-      lines.push(`<span class="l">LayerNorm(x) = ${pt(out)}   (x − μ = ${pt(centred)})</span>`);
+      lines.push(
+        `<span class="l">${tex(`\\operatorname{LayerNorm}(x) = ${pt(out)} \\qquad (x - \\mu = ${pt(centred)})`)}</span>`,
+      );
     }
 
     // The draggable input on top.
     parts.push(
       `<circle cx="${px(x[0])}" cy="${py(x[1])}" r="14" fill="transparent" />`,
       `<circle cx="${px(x[0])}" cy="${py(x[1])}" r="6" fill="var(--bg)" stroke="var(--text)" stroke-width="2" />`,
-      `<text x="${px(x[0]) + 9}" y="${py(x[1]) - 9}" font-size="13" fill="var(--text)">x</text>`,
+      svgLabel(px(x[0]) + 9, py(x[1]) - 13, tex('x'), { width: 20, style: 'font-size: 13px; color: var(--text); pointer-events: none' }),
     );
 
     svg.innerHTML = parts.join('');

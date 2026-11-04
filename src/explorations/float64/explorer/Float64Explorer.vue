@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import Tex from '~/math/Tex.vue';
 
 const buf = new DataView(new ArrayBuffer(8));
 
@@ -99,7 +100,7 @@ const exact = computed(() => {
 
     <p class="formula">
       <template v-if="kind === 'normal' || kind === 'subnormal' || kind === 'zero'">
-        (−1)<sup>{{ sign }}</sup> × {{ (lead + fraction).toPrecision(17) }} × 2<sup>{{ exponent }}</sup>
+        <Tex :t="`(-1)^{${sign}} \\times ${(lead + fraction).toPrecision(17)} \\times 2^{${exponent}}`" />
       </template>
       <template v-else>exponent field all ones → {{ kind }}</template>
       <span class="kind">{{ kind }}</span>

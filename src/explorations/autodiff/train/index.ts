@@ -2,6 +2,7 @@
 // Left: the data and the network's decision regions. Right: the network, with edges drawn by
 // weight or by the gradient the last backward pass produced.
 import type { Mount } from '~/widget';
+import { svgLabel, tex, texText } from '~/math/tex';
 import { Value, sum } from '../lib/engine';
 
 type Point = { x: number; y: number; t: 0 | 1 };
@@ -288,14 +289,17 @@ export const mount: Mount = (el) => {
     }
     const node = (x: number, y: number, text: string) =>
       `<circle cx="${x}" cy="${y}" r="13" fill="var(--surface)" stroke="var(--muted)" stroke-width="1.5"/>` +
-      `<text x="${x}" y="${y + 4}" text-anchor="middle" font-size="11" fill="var(--text)">${text}</text>`;
-    parts.push(node(IX, ins[0], 'x₁'), node(IX, ins[1], 'x₂'));
-    hs.forEach((y, j) => parts.push(node(HX, y, `h${'₁₂₃₄₅₆₇₈'[j]}`)));
+      svgLabel(x, y, tex(text), { anchor: 'middle', width: 26, style: 'font-size: 10px; color: var(--text)' });
+    parts.push(node(IX, ins[0], 'x_1'), node(IX, ins[1], 'x_2'));
+    hs.forEach((y, j) => parts.push(node(HX, y, `h_${j + 1}`)));
     parts.push(node(OX, oy, 'z'));
     parts.push(
-      `<text x="150" y="246" text-anchor="middle" font-size="10" fill="var(--muted)">${
-        view === 'weights' ? 'blue +, red −; thickness |w|' : 'blue: increase w, red: decrease; thickness |∂L/∂w|'
-      }</text>`,
+      svgLabel(
+        150,
+        241,
+        texText(view === 'weights' ? 'blue $+$, red $-$; thickness $|w|$' : 'blue: increase $w$, red: decrease; thickness $|\\partial L / \\partial w|$'),
+        { anchor: 'middle', width: 300, height: 18, style: 'font-size: 10px; color: var(--muted)' },
+      ),
     );
     netSvg.innerHTML = parts.join('');
   }

@@ -17,12 +17,12 @@ shared by every query head. Grouped-query attention (**GQA**) keeps a handful. B
 by giving heads less to tell apart, and both cost some quality.
 
 DeepSeek-V2 introduced a different trade, **multi-head latent attention** (MLA). Each token is
-squeezed into one small vector, the **latent** `c`, and only that gets cached. Every head still
-gets its own key and value, rebuilt from `c` by a per-head up-projection:
+squeezed into one small vector, the **latent** <M t="c" />, and only that gets cached. Every head still
+gets its own key and value, rebuilt from <M t="c" /> by a per-head up-projection:
 
-> c = W<sub>DKV</sub> h,&emsp;k<sub>i</sub> = W<sub>UK,i</sub> c,&emsp;v<sub>i</sub> = W<sub>UV,i</sub> c
+<M block t="c = W_{\mathrm{DKV}}\, h, \qquad k_i = W_{\mathrm{UK},i}\, c, \qquad v_i = W_{\mathrm{UV},i}\, c" />
 
-DeepSeek-V3 has 128 heads of width 128, so MHA would cache 2 × 128 × 128 = 32,768 numbers per
+DeepSeek-V3 has 128 heads of width 128, so MHA would cache <M t="2 \times 128 \times 128 = 32{,}768" /> numbers per
 token per layer. MLA caches a 512-wide latent plus a 64-wide extra key (more on that below).
 
 <Widget src="cache" height={520} caption="Per-token cache for each scheme. The bars share a linear scale." />
@@ -34,15 +34,15 @@ latent means less room for the information the heads need.
 
 ## Isn't rebuilding the keys expensive?
 
-It would be. If every step had to multiply each cached latent by `W_UK` for every head, MLA would
+It would be. If every step had to multiply each cached latent by <M t="W_{\mathrm{UK}}" /> for every head, MLA would
 trade memory for a lot of extra compute. It doesn't, because matrix multiplication is
-associative. The score for head *i* is
+associative. The score for head <M t="i" /> is
 
-> q<sub>i</sub> · k<sub>t</sub> = q<sub>i</sub><sup>T</sup> W<sub>UK,i</sub> c<sub>t</sub> = (W<sub>UK,i</sub><sup>T</sup> q<sub>i</sub>) · c<sub>t</sub>
+<M block t="q_i \cdot k_t = q_i^\top W_{\mathrm{UK},i}\, c_t = \left(W_{\mathrm{UK},i}^\top q_i\right) \cdot c_t" />
 
-so you can multiply the *query* by `W_UK` once, giving an absorbed query q̃, and dot it straight
+so you can multiply the *query* by <M t="W_{\mathrm{UK}}" /> once, giving an absorbed query <M t="\tilde q" />, and dot it straight
 against the cached latents. The keys never exist. The same trick works on the output side:
-`W_UV` folds into the output projection, so the values never exist either. At inference, each
+<M t="W_{\mathrm{UV}}" /> folds into the output projection, so the values never exist either. At inference, each
 head attends directly in latent space. In effect it's MQA with one wide shared key, but each
 head reads it through its own learned lens.
 
@@ -63,29 +63,29 @@ Modern models encode position with **rotary embeddings** (RoPE). The query and e
 rotated by an angle proportional to their position, so the score depends on how far apart they
 are:
 
-> (R<sub>n</sub> q) · (R<sub>t</sub> W<sub>UK</sub> c<sub>t</sub>) = q<sup>T</sup> R<sub>t−n</sub> W<sub>UK</sub> c<sub>t</sub>
+<M block t="(R_n q) \cdot (R_t W_{\mathrm{UK}}\, c_t) = q^\top R_{t-n} W_{\mathrm{UK}}\, c_t" />
 
-Switch to **RoPE on keys**. Now there's a rotation stuck between `q` and `W_UK`, and it's a
-different rotation for every cached token. No single q̃ can absorb it. The rows go red, and the
-ticks drift away from the bars. Notice which row still agrees: the newest token, where t − n = 0
-and the rotation is the identity. Drag θ to 0 and RoPE vanishes, and everything agrees again.
+Switch to **RoPE on keys**. Now there's a rotation stuck between <M t="q" /> and <M t="W_{\mathrm{UK}}" />, and it's a
+different rotation for every cached token. No single <M t="\tilde q" /> can absorb it. The rows go red, and the
+ticks drift away from the bars. Notice which row still agrees: the newest token, where <M t="t - n = 0" />
+and the rotation is the identity. Drag <M t="\theta" /> to 0 and RoPE vanishes, and everything agrees again.
 
 ## The fix: decoupled RoPE
 
 DeepSeek's answer is to keep position out of the latent. Each head's key is split into two
 parts:
 
-- a **content** part, rebuilt from `c` with no rotation, so absorption still works, and
+- a **content** part, rebuilt from <M t="c" /> with no rotation, so absorption still works, and
 - a small **RoPE** part (64 wide in DeepSeek-V3) that carries all the position information. It is
   computed directly from the token, rotated, and **shared by every head**, so it's cached once
   per token.
 
 The score is the sum of the two dot products. Switch to **Decoupled RoPE**. The dashed cells are
 the RoPE part: two extra numbers in the cache and in each key. The absorbed query is now
-`W_UKᵀ q` for the content half, with the rotated `q_R` appended. Every row agrees again, at any θ.
+<M t="W_{\mathrm{UK}}^\top q" /> for the content half, with the rotated <M t="q_R" /> appended. Every row agrees again, at any <M t="\theta" />.
 
 That shared RoPE key is the second segment of the MLA bar in the first widget. It's why
-DeepSeek's cache is 512 + 64 = 576 numbers per token per layer and not 512.
+DeepSeek's cache is <M t="512 + 64 = 576" /> numbers per token per layer and not 512.
 
 ## What it costs
 

@@ -1,0 +1,20 @@
+---
+/**
+ * Maths in MDX, rendered by KaTeX at build time (no client JS).
+ *
+ *   <M t="x_1 + x_2" />          inline
+ *   <M block t="\sum_i x_i" />   display, on its own line
+ *
+ * JSX attribute strings are raw, so backslashes need no escaping. A TeX error fails the build.
+ */
+import { tex } from '~/math/tex';
+
+interface Props {
+  t: string;
+  block?: boolean;
+}
+
+const { t, block = false } = Astro.props;
+---
+
+<Fragment set:html={tex(t, { display: block, strict: true })} />

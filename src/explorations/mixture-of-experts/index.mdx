@@ -18,8 +18,8 @@ wrong?
 ## Stored versus used
 
 Count only the feed-forward block, and make each expert the same size as the dense block it
-replaces. With E experts and the top k chosen per token, the layer stores E times the weights but
-spends only k times the compute. Change the sliders, or pick a real model.
+replaces. With <M t="E" /> experts and the top <M t="k" /> chosen per token, the layer stores <M t="E" /> times the weights but
+spends only <M t="k" /> times the compute. Change the sliders, or pick a real model.
 
 <Widget src="cost" height={300} />
 
@@ -34,8 +34,8 @@ specific mix of experts for the same compute.
 
 ## The router
 
-The router is a single linear layer. For a token vector x it computes a score for each
-expert, wᵢ · x + bᵢ, and a softmax turns the scores into probabilities. The k most likely experts
+The router is a single linear layer. For a token vector <M t="\mathbf{x}" /> it computes a score for each
+expert, <M t="\mathbf{w}_i \cdot \mathbf{x} + b_i" />, and a softmax turns the scores into probabilities. The <M t="k" /> most likely experts
 run, and their outputs are added together, weighted by their probabilities rescaled to sum to 1.
 Those weights are the **gates**.
 
@@ -77,17 +77,17 @@ Press **train** with the balancing loss at 0. Usually a few experts take over se
 each, and others go quiet. Their bars sit at zero and they never come back. The error stalls,
 because one linear function can't fit two clusters' different rules.
 
-Now set α to about 0.05, press **reset** and train again. Most runs end with all eight experts in
+Now set <M t="\alpha" /> to about 0.05, press **reset** and train again. Most runs end with all eight experts in
 use, roughly one per cluster, and a lower error. Some runs still merge two clusters; reset a few
 times to see the spread.
 
-The balancing term is from the Switch Transformer paper. With fᵢ the fraction of tokens sent to
-expert i and Pᵢ the router's average probability for it, it adds
+The balancing term is from the Switch Transformer paper. With <M t="f_i" /> the fraction of tokens sent to
+expert <M t="i" /> and <M t="P_i" /> the router's average probability for it, it adds
 
-> α · E · Σᵢ fᵢ Pᵢ
+<M block t="\alpha \cdot E \cdot \sum_i f_i P_i" />
 
 to the loss. It's smallest when both are spread evenly, so it nudges the router's probabilities
-away from busy experts and toward idle ones. It's a separate goal from the actual task, so set α
+away from busy experts and toward idle ones. It's a separate goal from the actual task, so set <M t="\alpha" />
 too high and the router cares more about being even than about being right.
 
 ### Capacity
@@ -98,7 +98,7 @@ Capacity 1.0 is exactly an even share; 1.25 allows 25% slack. Tokens routed to a
 **dropped**: they skip the layer and only the residual connection carries them forward. In the
 widget, the hatched part of a bar above the red line is dropped tokens.
 
-Try α = 0 with capacity 1.0. When routing is lopsided, a lot of tokens are dropped, and those
+Try <M t="\alpha = 0" /> with capacity 1.0. When routing is lopsided, a lot of tokens are dropped, and those
 dropped tokens send no learning signal back to the router. Balancing doesn't just save parameters,
 it keeps tokens from being thrown away.
 
@@ -106,9 +106,9 @@ it keeps tokens from being thrown away.
 
 - **Shared experts.** DeepSeek's models run one or more experts for every token alongside the
   routed ones, so common knowledge doesn't have to be copied into every expert.
-- **Fine-grained experts.** Many small experts with a larger k, as in the last row of the first
+- **Fine-grained experts.** Many small experts with a larger <M t="k" />, as in the last row of the first
   widget. Same compute, far more possible combinations.
 - **No auxiliary loss.** DeepSeek-V3 drops the balancing term. Instead it adds a bias to each
-  expert's score that's used only for picking the top k, not for the gates. After each step it
+  expert's score that's used only for picking the top <M t="k" />, not for the gates. After each step it
   nudges the bias down for overloaded experts and up for idle ones. The task loss never has to
   compete with a balancing goal.

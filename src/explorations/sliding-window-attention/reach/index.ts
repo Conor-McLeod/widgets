@@ -2,6 +2,7 @@
 // Each layer lets information hop at most W−1 positions, so the receptive field is a cone that
 // widens by W−1 per layer. A global layer anywhere in the stack opens it to the whole prefix.
 import type { Mount } from '~/widget';
+import { tex } from '~/math/tex';
 
 const N = 24;
 const VW = 480;
@@ -17,7 +18,7 @@ export const mount: Mount = (el) => {
   el.innerHTML = `
     <div class="swr">
       <div class="swr-ctl">
-        <label><span>window W</span><input class="swr-w" type="range" min="1" max="8" value="4" /><output></output></label>
+        <label><span>window ${tex('W')}</span><input class="swr-w" type="range" min="1" max="8" value="4" /><output></output></label>
         <label><span>layers</span><input class="swr-l" type="range" min="1" max="${MAX_LAYERS}" value="3" /><output></output></label>
         <label><span>global layers</span>
           <select class="swr-g">
@@ -108,7 +109,7 @@ export const mount: Mount = (el) => {
     const anyGlobal = Array.from({ length: L }, (_, i) => isGlobal(i + 1)).some(Boolean);
     const formula = anyGlobal
       ? 'a global layer sees the whole prefix'
-      : `1 + L·(W−1) = 1 + ${L}·${W - 1} = ${1 + L * (W - 1)}` +
+      : tex(`1 + L(W - 1) = 1 + ${L} \\cdot ${W - 1} = ${1 + L * (W - 1)}`) +
         (1 + L * (W - 1) > target + 1 ? ', cut off by the start of the text' : '');
     read.innerHTML = `output ${target} depends on inputs ${lo[0]}–${target} (${span} tokens)<br>reach: ${formula}`;
   }

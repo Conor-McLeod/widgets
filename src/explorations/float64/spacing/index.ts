@@ -1,10 +1,11 @@
 // Vanilla widget: every representable positive number in a toy float format,
 // drawn on a linear number line, so the spacing doubling at each power of two is visible.
 import type { Mount } from '~/widget';
+import { svgLabel, tex } from '~/math/tex';
 
 const MAX = 8;
 const MIN_EXP = -2;
-const LABELS: Record<number, string> = { 0.25: '¼', 0.5: '½' };
+const LABELS: Record<number, string> = { 0.25: '\\tfrac{1}{4}', 0.5: '\\tfrac{1}{2}' };
 
 function representable(p: number): number[] {
   // Normal numbers 1.m × 2^e with p mantissa bits, e from MIN_EXP up to below MAX.
@@ -55,7 +56,7 @@ export const mount: Mount = (el) => {
       const b = 2 ** e;
       parts.push(
         `<line x1="${x(b)}" x2="${x(b)}" y1="30" y2="95" stroke="var(--muted)" stroke-dasharray="2 3" />`,
-        `<text x="${x(b)}" y="112" text-anchor="middle" font-size="13" fill="var(--muted)">${LABELS[b] ?? b}</text>`,
+        svgLabel(x(b), 108, tex(LABELS[b] ?? String(b)), { anchor: 'middle', width: 40, style: 'font-size: 13px; color: var(--muted)' }),
       );
     }
     for (const val of values) {

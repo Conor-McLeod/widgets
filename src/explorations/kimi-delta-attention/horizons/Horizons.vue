@@ -5,6 +5,7 @@
 //   w(L) = Σ_i q_i k_i α_i^L.
 // Gated DeltaNet uses one α per head; KDA gives each key channel its own α.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import Tex from '~/math/Tex.vue';
 
 type Mode = 'scalar' | 'channel';
 const D = 8;
@@ -121,7 +122,9 @@ const fmtH = (h: number) => (h >= 10 ? Math.round(h).toString() : h.toFixed(1));
       <g font-size="12" fill="var(--muted)">
         <text v-for="t in xticks" :key="t" :x="x(t)" :y="H - 10" text-anchor="middle">{{ t }}</text>
         <text :x="PAD.l - 6" :y="y(1) + 4" text-anchor="end">1</text>
-        <text :x="PAD.l - 6" :y="y(0.5) + 4" text-anchor="end">½</text>
+        <foreignObject :x="PAD.l - 36" :y="y(0.5) - 11" width="30" height="22">
+          <div class="ytick"><Tex t="\tfrac{1}{2}" /></div>
+        </foreignObject>
         <text :x="PAD.l - 6" :y="y(0) + 4" text-anchor="end">0</text>
       </g>
       <path
@@ -153,6 +156,15 @@ const fmtH = (h: number) => (h >= 10 ? Math.round(h).toString() : h.toFixed(1));
 </template>
 
 <style scoped>
+.ytick {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+}
 .hz {
   font-size: 0.92rem;
 }

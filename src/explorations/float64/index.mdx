@@ -8,7 +8,7 @@ tags: [numerics, floating-point]
 A JavaScript `number` is an IEEE 754 double: 64 bits split into a **sign**,
 an 11-bit **exponent** and a 52-bit **mantissa**. The value is
 
-> (−1)<sup>sign</sup> × 1.mantissa × 2<sup>exponent − 1023</sup>
+<M block t="(-1)^{\text{sign}} \times 1.\text{mantissa} \times 2^{\,\text{exponent} - 1023}" />
 
 Type a number, or click individual bits to flip them. `0.1` is a good place to start.
 Its mantissa is a repeating pattern that gets cut off, so the stored value is slightly
@@ -18,14 +18,14 @@ larger than one tenth.
 
 ## Why the gaps grow
 
-The mantissa has a fixed number of bits, so every interval [2<sup>e</sup>, 2<sup>e+1</sup>)
+The mantissa has a fixed number of bits, so every interval <M t="[2^e, 2^{e+1})" />
 holds exactly the same number of floats. Each interval is twice as wide as the one
 before it, so the gap between neighbouring floats doubles at every power of two.
 
 The line below uses a toy format with only a few mantissa bits, so you can see
 every value. Drag the slider: more bits fill in each interval, but the doubling stays.
 
-<Widget src="spacing" height={190} caption="Every positive normal number in a toy format with exponents from −2 to 2." />
+<Widget src="spacing" height={190} caption="Every positive normal number in a toy format with exponents from $-2$ to $2$." />
 
-In a real float64 each interval holds 2<sup>52</sup> values. That's why
-`2 ** 53 + 1 === 2 ** 53`: past 2<sup>53</sup> the gap is 2, so odd integers can't be represented.
+In a real float64 each interval holds <M t="2^{52}" /> values. That's why
+`2 ** 53 + 1 === 2 ** 53`: past <M t="2^{53}" /> the gap is 2, so odd integers can't be represented.

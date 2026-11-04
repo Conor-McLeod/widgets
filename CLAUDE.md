@@ -38,6 +38,10 @@ Then `pnpm dev` and open `http://localhost:4321/<slug>`.
   `--bg`, `--accent`, `--accent-soft`, `--danger`, `--mono`). They switch for dark mode; hard-coded colours don't.
   Scope widget styles (Vue `scoped`, Svelte default, or class prefixes in vanilla).
 - **Widgets must fit the column at phone width** (the prose column is 720px max). No horizontal page scroll.
+- **All maths goes through KaTeX**, never Unicode look-alikes (no `x₁`, `α`, `∂`, `<sub>`). In MDX use the global
+  `<M t="x_1 + x_2" />` (inline) or `<M block t="..." />` (display, on its own line); it renders at build time and a TeX
+  error fails the build. Widget captions accept `$...$`. In Vue widgets use `<Tex t="\alpha" />` (`~/math/Tex.vue`); elsewhere
+  `tex()` / `texText()` from `~/math/tex` (returns HTML), and `svgLabel()` for maths inside SVG.
 - **Prose should motivate the widget**: what question prompted it, what to try, what to notice.
 - **Ask before adding a dependency.** Add it to the root `package.json` with `pnpm add`.
 
