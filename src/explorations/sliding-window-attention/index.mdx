@@ -1,0 +1,84 @@
+---
+title: Sliding-window attention
+summary: Letting each token look back only W positions, why stacked layers still reach much further, and how the KV cache stops growing.
+date: 2026-11-04
+tags: [machine-learning, transformers, attention]
+draft: true
+---
+
+In a transformer decoder every token builds a **query** and compares it with the **key** of every
+token before it. The resulting scores, after a softmax, decide how much of each earlier token's
+**value** gets mixed into this one. With *N* tokens that's about *N*²/2 scores per layer. While
+generating text, the model also has to keep every earlier key and value around (the **KV cache**),
+so memory grows with every token it reads.
+
+Most of what a token needs is usually nearby, though. **Sliding-window attention** acts on that:
+each token attends only to itself and the *W* − 1 tokens before it. Longformer used it in 2020, and
+Mistral 7B made it common in open models with *W* = 4096.
+
+## The mask
+
+Attention patterns are easiest to see as a grid. Each row is a query, each column a key, and a
+filled cell means "this query may look at this key". The upper triangle is always empty, because a
+token can't see the future. Full causal attention fills everything below the diagonal. A sliding
+window keeps only a band along it.
+
+<Widget src="mask" height={580} />
+
+Hover or tap a row to read off what that token can see. Things to try:
+
+- Switch between **full causal** and **sliding window**. The stats show the two costs that change:
+  scores per layer, and how many keys and values have to be kept.
+- Drag **W** up to 24 and the band becomes the full triangle again. A sliding window is just causal
+  attention with a cap.
+- Add some **sink tokens**. These are the first few tokens of the text, kept visible to every query.
+  The next section explains why you'd want them.
+
+For long inputs the saving is large. At *N* = 128K and *W* = 4096, each query computes 4096 scores
+instead of up to 128K, and the cache holds 4096 positions per layer instead of 128K.
+
+### Why keep the first few tokens?
+
+Softmax forces every query's weights to add up to 1, even when nothing in its context is relevant.
+Trained models tend to park that unwanted weight on the first few tokens of the text, which are
+visible to every query in normal training. *StreamingLLM* (Xiao et al., 2023) found that once a
+plain sliding window drops those tokens, quality collapses, and that keeping just the first four
+around as **attention sinks** fixes most of it. That's what the red cells in the grid are.
+
+## Seeing past the window
+
+A window of 4096 doesn't mean the model forgets everything older than 4096 tokens. Attention runs
+in every layer, and each layer reads the previous layer's outputs, which already mix in their own
+windows. So information can hop *W* − 1 positions per layer, and after *L* layers a token can be
+influenced by 1 + *L*(*W* − 1) earlier positions.
+
+<Widget src="reach" height={490} />
+
+Move your pointer along the top row to pick an output token. The shaded cone is everything that can
+affect it, and the lines are the window it reads directly in the top layer.
+
+- With **W** = 4 and 3 layers, token 23 depends on inputs 14–23: three hops of 3.
+- Add layers and watch the cone widen by *W* − 1 each time.
+- Set **global layers** to *every 2nd*. One full-attention layer anywhere in the stack makes the
+  whole prefix reachable.
+
+Mistral 7B has 32 layers with *W* = 4096, so its theoretical reach is about 131K tokens. That's an
+upper bound. Something from far back has to be relayed through many layers, squeezed into
+intermediate hidden states along the way, so it arrives blurred. That's why many recent models mix
+the two kinds of layer. Gemma 2 alternates local and global layers, and Gemma 3 uses five local
+layers (*W* = 1024) for every global one. The local layers do most of the work cheaply, and the
+occasional global layer can still pick out an exact detail from far away.
+
+## The cache stops growing
+
+The other half of the saving is during generation. A token that has slid out of the window is never
+looked at again, by any later query in that layer, so its key and value can be thrown away. That
+makes the cache a fixed-size ring buffer: the token at position *p* goes into slot *p* mod *W*,
+overwriting whatever was there.
+
+<Widget src="cache" height={340} />
+
+Step through the sentence. Once it's longer than *W*, every new token evicts the oldest one, and
+memory stays at *W* slots. Notice the slots end up out of order. That doesn't matter: attention
+treats its keys as a set, and the position information is already baked into each key (via rotary
+embeddings) when it's written, so nothing depends on where a key sits in the buffer.
