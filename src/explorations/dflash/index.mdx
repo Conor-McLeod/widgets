@@ -1,0 +1,155 @@
+---
+title: "DFlash: drafting a whole block at once"
+summary: DFlash speeds up speculative decoding by drafting a whole block of tokens in one parallel pass, and DFlash 2 makes those parallel guesses fit together.
+date: 2026-11-04
+tags: [llm, inference, machine-learning]
+draft: false
+---
+
+A big language model writes one token per forward pass, and each pass streams every weight
+through the GPU to produce that one token. At small batch sizes the chip spends most of its time
+waiting on memory, not doing arithmetic. Push five tokens through instead of one and the pass costs
+about the same. **Speculative decoding** takes advantage of this: a small, cheap **drafter**
+guesses the next <M t="\gamma" /> tokens, the big **target** model checks all of them in one pass,
+and the longest correct prefix is kept. At the first wrong guess the target's own token replaces it,
+so every cycle produces at least one token. Greedy decoding gives exactly the target's output, and
+with rejection sampling, sampled output keeps exactly the target's distribution.
+
+How fast this goes comes down to two numbers: how many tokens a cycle yields, and how long a
+cycle takes. If each draft position is accepted with probability <M t="\alpha" /> (given the ones
+before it were), the expected yield is
+
+<M block t="\tau = 1 + \alpha + \alpha^2 + \dots + \alpha^\gamma = \frac{1 - \alpha^{\gamma+1}}{1-\alpha}" />
+
+and the speedup over plain decoding is <M t="\tau / (T_\text{draft} + T_\text{verify})" />, with
+times measured in target forward passes. The catch is <M t="T_\text{draft}" />. The strongest
+drafters before DFlash, the EAGLE family, are **autoregressive**: they produce draft token 2 only
+after draft token 1, so drafting <M t="\gamma" /> tokens costs <M t="\gamma" /> sequential passes.
+A longer block buys a bit more <M t="\tau" />, but every extra token is paid for in latency.
+
+[DFlash](https://arxiv.org/abs/2602.06036) (Chen, Liang and Liu, ICML 2026) asks: what if the
+drafter wrote the whole block in **one** pass?
+
+<Widget src="cost" height={560} caption="A toy cost model: a target pass costs 1; an autoregressive draft step costs $0.06$; a DFlash pass costs $0.02$ plus $0.012$ per layer. Real numbers depend on hardware and batch size." />
+
+Start at the defaults, where both drafters are equally accurate. The orange drafter's bar grows
+one segment per draft token; the blue one stays a single short pass. Then:
+
+1. Drag <M t="\gamma" /> from 1 to 16 and watch the chart. The autoregressive curve peaks early,
+   then falls as drafting eats the gains. DFlash keeps climbing well past it, because a longer
+   block is nearly free.
+2. Drop DFlash's <M t="\alpha" /> below the AR drafter's. DFlash can make worse guesses per
+   position and still win, since it can afford to make more of them.
+3. Raise the layer count. Depth costs one pass's worth of layers, not one per token. That's
+   what lets DFlash use a 5-layer drafter where EAGLE-3 uses one: the paper reports a
+   multi-layer DFlash drafting 16 tokens is faster than a 1-layer EAGLE-3 drafting 8.
+
+## How a drafter writes a block in one go
+
+DFlash's drafter is a small **block diffusion** model. Diffusion language models start from a
+sequence of `[MASK]` tokens and fill them in. On their own they tend to write worse text than
+autoregressive models, and the paper's point is that a drafter doesn't need to be a great writer.
+The target checks everything anyway. It only needs to be fast and usually right.
+
+Each cycle, the drafter's input is the last verified token (the **anchor**) followed by
+<M t="\gamma" /> masks. Attention inside the block is bidirectional, so every position can see every
+other position's input, and one forward pass returns a distribution for every mask at once. Two
+design choices make those guesses good:
+
+- **The target does the reading.** The drafter never builds its own understanding of the context.
+  After each verification, hidden states from several layers of the target, spread from shallow to
+  deep, are concatenated and projected into one feature per context token. Those features are
+  inserted as extra keys and values into the attention of **every** draft layer. EAGLE-3 feeds
+  target features only into its first layer, where the signal fades as layers stack up. With
+  injection at every layer, acceptance keeps improving as the drafter gets deeper.
+- **Shared ends.** The drafter reuses the target's frozen token embedding and LM head, so it only
+  has to learn the layers in between. Training picks random anchors in target-generated text, masks
+  the next block, and predicts all of it at once. Early positions get more weight in the loss,
+  since a miss at position 1 throws away everything after it.
+
+The result: up to about 6× lossless speedup on Qwen3-8B, roughly 2.5× faster than EAGLE-3. It now
+ships in SGLang, vLLM, TensorRT-LLM and llama.cpp.
+
+## Parallel guesses don't have to agree
+
+Look again at that one pass. Every position makes its prediction **independently**. Position 3
+doesn't know what position 2 picked, because position 2 is still a mask in the input. When the text
+could go two ways, each position hedges between them separately, and taking the top pick at each
+position can splice the two together.
+
+[DFlash 2](https://inco.ai/blog/dflash2/) (Inco AI, August 2026) starts from a measurement. On a
+5-layer Qwen3-4B DFlash drafter, the top pick at the first position is right 85.4% of the time, but
+the right token is somewhere in the top 16 candidates 99.5% of the time. If something could pick
+the right candidate from the top 16 at every position, acceptance length would rise from 4.27 to
+6.79. The right tokens are already there. They just need to be chosen better.
+
+<Widget src="block" height={430} caption="Candidate lists and scores are made up to show the mechanism. Verification keeps drafts up to the first mismatch; the target writes the next token either way." />
+
+Each row is one draft position, with the drafter's four best candidates. Start on **Two
+phrasings** with plain DFlash. Position 1 says "which", position 2's top pick is "city" (from the
+"a city" phrasing), and verification cuts the block after one token. Switch to **DFlash 2** and the
+selector chooses "is" instead, so the block survives four positions further. It still misses at
+position 6, where both candidates fit and the drafter just guessed wrong. **Oracle** shows the
+ceiling. Try **Stutter** for the failure the DFlash 2 post illustrates, two neighbours repeating a
+word, and **Easy code** to see that the selector leaves confident blocks alone. You can also click
+any candidate to take over the selection yourself.
+
+The selector is tiny. It keeps the top 16 candidates at each position and scores each adjacent
+pair, a candidate <M t="a" /> at position <M t="t-1" /> followed by <M t="b" /> at <M t="t" />:
+
+<M block t="S_t(a, b) = U_t(b) + \big\langle A(a) \odot H(h_t),\; B(b) \big\rangle" />
+
+<M t="U_t(b)" /> is DFlash's own logit for <M t="b" />. <M t="A" /> and <M t="B" /> embed tokens into
+256 dimensions, and <M t="H(h_t)" /> is a gate computed from that position's hidden state that decides
+which dimensions of the match count. All pair scores come out of one parallel step. The only
+sequential work is a walk over the precomputed scores, starting from the anchor and taking the best
+successor each step (or sampling from the scores, with rejection sampling keeping the output exact).
+It adds 2M parameters and 0.6% to cycle latency, and raises acceptance length from 4.27 to 4.61 with
+greedy decoding. DSpark's sequential correction heads, an alternative that rewrites each position's
+full-vocabulary distribution, get to 4.49 with 78M parameters and 9.6% extra latency.
+
+## The end of the block
+
+The selector can only choose among the candidates it's given, and the candidates get worse toward
+the end of the block. Even the top-16 oracle falls from 99.5% at position 0 to 87.8% at position 6.
+DFlash 2 calls this **suffix decay**.
+
+<Widget src="decay" height={470} />
+
+On **Depth vs convolution**, compare 3, 5 and 15 layers. They are nearly identical at position 0
+and spread apart further down the block. So suffix decay is partly a capacity problem, but adding
+ten layers adds capacity everywhere, including at early positions that had nothing left to gain.
+It costs 15% more cycle latency.
+
+The DFlash 2 authors looked at where the drafter's attention goes. Attention has two jobs here:
+reading the injected context, and relating block positions to each other. The share spent inside
+the block falls from 30% in layer 1 to 8% in layer 5. Dependencies inside a block are short-range
+anyway, so they handed that job to a **two-tap dynamic convolution**, placed before and after every
+attention and MLP sublayer:
+
+<M block t="\operatorname{Conv}(x)_t = k_{t,0} \odot x_t + k_{t,1} \odot x_{t-1}" />
+
+Each position mixes its own vector with its predecessor's (position 1 reads the anchor), with
+kernels nudged by the current hidden state. The output at <M t="t" /> depends on the layer's
+*inputs* at <M t="t" /> and <M t="t-1" />, not on any output, so all positions still compute in
+parallel. Toggle the lines: **5 layers + conv** almost matches 15 layers at the tail, for 3% more
+parameters and 0.7% more latency. With the convolution in place, attention inside the block in
+layers 4 and 5 drops from 9.4% to 0.5%. Attention goes back to reading the context.
+
+Switch to **whole prefix survives** to see why the tail matters. A draft at position <M t="k" />
+only counts if every position before it was accepted, so these curves multiply the per-position
+rates together, and <M t="\tau" /> is one plus the area underneath. A few points of per-position
+accuracy late in the block add up to a lot of area. On **Full methods**, DFlash 2 stays flat near
+86% all the way to position 14, and the baselines end 6 to 9 points lower. (The <M t="\tau" /> values
+in the legend are computed from these rates; the post's per-request averages differ slightly.)
+
+## What it adds up to
+
+Selector and convolution together add 1.3% to cycle latency and about one more accepted token per
+cycle (+21% over DFlash on Qwen3.5-4B). The released Qwen3.8-27B drafter runs at 2.7–3.4× the
+throughput of plain decoding at batch size 1. That drops to 1.0–1.45× at 32 concurrent requests,
+because a full batch is no longer waiting on memory, so verifying extra tokens isn't free anymore.
+The cost model above assumes the batch-1 case, where it is.
+
+Neither version changes what the target outputs. Everything here only changes how often the
+target agrees with the drafter.
