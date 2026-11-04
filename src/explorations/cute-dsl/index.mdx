@@ -1,0 +1,162 @@
+---
+title: CuTe DSL
+summary: NVIDIA's Python language for GPU kernels, built on one idea, the layout, a function from coordinates to memory offsets that also describes tiling and which thread holds which element.
+date: 2026-11-04
+tags: [gpu, kernels, python]
+draft: false
+---
+
+Writing a fast GPU kernel is mostly bookkeeping. You have to work out which block gets which tile of
+the matrix, which thread inside the block holds which elements, and whether the addresses a warp
+touches at the same time sit next to each other in memory. In plain CUDA you write all of that as index
+arithmetic like `row * ld + (blockIdx.x * 64 + threadIdx.x % 16) * 4`, and every kernel redoes it slightly
+differently.
+
+**CuTe** is the part of NVIDIA's CUTLASS library that turns that bookkeeping into a small algebra of
+**layouts**. **CuTe DSL** is the same algebra in Python. It shipped with CUTLASS 4 in 2025. You write
+kernels as Python functions, and they're compiled through MLIR into GPU code. The Python never runs on the
+GPU. It runs once, at compile time, to build the kernel. So the question is what a layout is, and why one
+abstraction covers all three of the jobs above.
+
+## A layout is a function
+
+A CuTe layout is a pair of tuples, a **shape** and a **stride**, written `shape:stride`. It maps a
+coordinate to an offset: multiply each coordinate by its stride and add. For a rank-2 layout <M t="(M, N):(d_0, d_1)" />,
+
+<M block t="(i, j) \mapsto i\,d_0 + j\,d_1" />
+
+That's all a column-major or row-major matrix ever was. `(4,8):(1,4)` is a 4×8 column-major matrix:
+moving down a row adds 1, moving right a column adds 4. `(4,8):(8,1)` is the same 4×8 matrix stored
+row-major. Try the presets, then type your own.
+
+<Widget src="layout" height={360} caption="Cells are shaded by offset, so the shading shows the order the elements sit in memory. Hover to see the sum." />
+
+A few things to notice:
+
+- **Padded** `(4,8):(1,5)` leaves one unused slot after every column. That's the leading dimension in BLAS. The layout
+  covers it with no extra concept.
+- **Broadcast** `(4,8):(0,1)` has stride 0, so every row maps to the same 8 offsets. A size-<M t="M" /> view of one
+  row costs nothing.
+- **2×2 blocks** has **nested** modes: the row mode is itself `(2,2):(1,4)`. A row index <M t="i" /> is split
+  into <M t="(i \bmod 2, \lfloor i/2 \rfloor)" />, and each piece gets its own stride. The grid is still
+  4×8 to whoever indexes it, but in memory it's stored as 2×2 blocks of 4 contiguous elements.
+  CUDA has no word for this. In CuTe it's just another layout.
+
+Every coordinate can also be given as a single integer. CuTe counts through the shape with the
+leftmost mode fastest (column-major order), so element 5 of a 4×8 layout is <M t="(1, 1)" />. That's
+the "1-D index" in the readout. It's why a layout can be **composed**: the output offset of one layout can be
+fed into another as its 1-D input.
+
+A **tensor** is a pointer plus a layout. `gA[i, j]` evaluates the layout and dereferences. Kernel code
+indexes tensors by coordinates, and the layout decides where that lands. The same kernel works on row-major,
+column-major or padded inputs with no changes.
+
+## Tiling is division
+
+The first job in a kernel is to hand each thread block its tile. CuTe does this with
+`zipped_divide(tensor, tiler)`. It returns the same tensor with a new layout of two modes: mode 0 is
+"position inside a tile" and mode 1 is "which tile". Nothing is copied. It's the original memory
+seen through a different function.
+
+<Widget src="divide" height={420} caption="Left: an 8×16 row-major tensor coloured by tile. Right: the same 128 elements under the divided layout. Each column is one tile." />
+
+Read the divided layout for the `(2,4)` tiler: `((2,4),(4,4)):((16,1),(32,4))`. The tile mode `(2,4):(16,1)`
+has the original strides, because moving inside a tile is moving in the original matrix. The rest mode
+`(4,4):(32,4)` steps by whole tiles: 2 rows down is 32 elements, 4 columns across is 4. Slicing with
+`None` keeps a mode, so `gA[(None, b)]` is tile <M t="b" /> as a `(2,4)` tensor of its own. In a kernel,
+<M t="b" /> is the block index.
+
+## Who holds what: thread-value layouts
+
+Inside the tile, the work is split across threads. CuTe describes the split with another layout, a
+**TV layout**. It maps a `(thread, value)` pair to a coordinate in the tile: thread <M t="t" />'s
+<M t="v" />-th element is at `tv(t, v)`. **Composing** the tile's layout with it,
+
+<M block t="\text{tile} \circ \text{tv} : (t, v) \mapsto \text{coordinate} \mapsto \text{address}" />
+
+gives each thread its own view of exactly the elements it owns. Then `thr = tidfrg[(tidx, None)]` slices
+out one thread's values.
+
+The TV layout decides how memory is accessed. Below, 8 threads split a 4×8 row-major tile of 4-byte floats,
+4 values each. Memory is fetched in 32-byte **sectors** of 8 floats. Step through the loads and count the
+sectors each one touches.
+
+<Widget src="tv" height={480} caption="Highlighted: the elements one load instruction reads, across all threads. Outlined sectors are the ones it fetches." />
+
+- **Thread per column** `(8,4):(4,1)`: at each load the 8 threads read 8 neighbouring floats, one sector.
+  This is **coalesced**. It still takes 4 loads, because a thread's own values are a row apart.
+- **Scattered** `((4,2),4):((1,4),8)`: the same 32 elements, but each load is spread over 4 rows, so it pulls
+  in 4 sectors to use 8 floats. That's 16 sectors for the tile, 4× the traffic.
+- **Vectorised** `((2,4),4):((16,1),4)`: each thread's 4 values are adjacent in memory, so one 16-byte vector load
+  fetches them, and the threads together cover the tile in a single instruction.
+
+The thread mode of the vectorised layout is nested, `(2,4):(16,1)`. Thread <M t="t" /> is split into
+<M t="(t \bmod 2, \lfloor t/2 \rfloor)" />: the first part picks the left or right half of a row (16 is 4
+columns in column-major coordinates), the second picks the row. Real kernels use 128 or more threads, with the
+same structure.
+
+## Putting it together
+
+This is the elementwise-add kernel from the CUTLASS CuTe DSL notebooks, trimmed a little.
+It's every step above, in order:
+
+```python
+import cutlass.cute as cute
+
+@cute.kernel
+def add_kernel(gA: cute.Tensor, gB: cute.Tensor, gC: cute.Tensor, tv_layout: cute.Layout):
+    tidx, _, _ = cute.arch.thread_idx()
+    bidx, _, _ = cute.arch.block_idx()
+
+    blk_coord = ((None, None), bidx)
+    blkA, blkB, blkC = gA[blk_coord], gB[blk_coord], gC[blk_coord]   # this block's tile
+
+    # (tid, vid) -> address
+    thrA = cute.composition(blkA, tv_layout)[(tidx, None)]          # this thread's values
+    thrB = cute.composition(blkB, tv_layout)[(tidx, None)]
+    thrC = cute.composition(blkC, tv_layout)[(tidx, None)]
+
+    thrC[None] = thrA.load() + thrB.load()
+
+@cute.jit
+def add(mA: cute.Tensor, mB: cute.Tensor, mC: cute.Tensor):
+    thr_layout = cute.make_ordered_layout((4, 64), order=(1, 0))
+    val_layout = cute.make_ordered_layout((16, 16), order=(1, 0))  # 16 rows of 16 bytes
+    val_layout = cute.recast_layout(mA.element_type.width, 8, val_layout)
+    tiler_mn, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
+
+    gA = cute.zipped_divide(mA, tiler_mn)   # ((TileM, TileN), (RestM, RestN))
+    gB = cute.zipped_divide(mB, tiler_mn)
+    gC = cute.zipped_divide(mC, tiler_mn)
+
+    add_kernel(gA, gB, gC, tv_layout).launch(
+        grid=[cute.size(gC, mode=[1]), 1, 1],
+        block=[cute.size(tv_layout, mode=[0]), 1, 1],
+    )
+```
+
+The host side wraps PyTorch tensors with `from_dlpack`, calls `cute.compile(add, a, b, c)` once, and then
+calls the compiled function like any Python function.
+
+Some things to notice:
+
+- **There is no index arithmetic.** The kernel never computes an address. It slices layouts with
+  `None` and block or thread indices, and composition does the rest.
+- **`make_layout_tv` builds the TV layout from two simpler ones:** how threads are arranged over the tile
+  (4×64, row-major) and how each thread's values are arranged (16 rows of 16 bytes). With half-precision inputs that's
+  eight elements, one vector load, per row. It's the "vectorised" preset at full size.
+- **`@cute.jit` runs at compile time.** Shapes known then are folded into constants, so the layout algebra
+  costs nothing at run time. The generated code is the same index arithmetic you'd have written by hand.
+  Sizes that are only known at run time stay as values the kernel computes with.
+- **`launch` reads the grid off the layouts.** The number of blocks is the size of the "which tile" mode, and the
+  block size is the size of the thread mode.
+
+## What's built on this
+
+The rest of CuTe uses the same pieces. A `TiledMMA` is a TV layout for a Tensor Core instruction. It records
+which thread holds which elements of the <M t="A" />, <M t="B" /> and <M t="C" /> fragments (see the
+[Tensor Core exploration](/tensor-core) for what that instruction does). A `TiledCopy` pairs a TV layout with
+a copy instruction, such as a vector load, an asynchronous copy into shared memory, or a TMA bulk transfer.
+**Swizzles** are layouts too. They permute shared-memory addresses with an XOR so that the threads of a warp hit
+different memory banks. A full Hopper or Blackwell GEMM in CuTe DSL is a few hundred lines of Python. Most of it
+is choosing these layouts.
