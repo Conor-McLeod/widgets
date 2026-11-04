@@ -1,0 +1,107 @@
+---
+title: Kimi Delta Attention
+summary: How a linear-attention layer keeps a fixed-size memory, why the delta rule overwrites instead of piling up, and what KDA's per-channel forget gate adds.
+date: 2026-11-04
+tags: [machine-learning, attention, linear-algebra]
+draft: false
+---
+
+A transformer's softmax attention keeps every past key and value around (the KV cache) and
+compares each new query against all of them. Memory grows with the context, and so does the
+work per generated token. Linear attention swaps the cache for a fixed-size matrix **S**, the
+*state*. Each token writes into it, and each query reads out of it as **o** = **S**ᵀ**q**.
+Generating the millionth token costs the same as generating the tenth.
+
+The question is what you lose by squeezing an ever-growing context into a few thousand numbers.
+Kimi Delta Attention (KDA), from Moonshot AI's
+[Kimi Linear](https://arxiv.org/abs/2510.26692) report, is one answer. It's built in two layers:
+the *delta rule* decides how to write, and a *per-channel forget gate* decides what to let fade.
+
+## Writing: add, or correct?
+
+Think of **S** as a key → value lookup table stored as a matrix. Plain linear attention writes by
+adding the outer product of key and value:
+
+> **S** ← **S** + **k** **v**ᵀ
+
+Reading with the same key gives back **v**, plus every other value whose key overlaps with it.
+Write the same key twice and you get the sum of both values, not the latest one.
+
+The delta rule reads before it writes. It asks the memory what it currently holds for **k**,
+and writes only the difference, scaled by a learned write strength β:
+
+> **S** ← **S** + β **k** (**v** − **S**ᵀ**k**)ᵀ
+
+With β = 1 and a unit-length key, the memory returns exactly **v** for **k** right after the
+write. The old association is replaced instead of blended.
+
+Below, five writes go into a 3×3 state. Values are colours, so wrong reads look muddy. Click
+through the steps under each rule.
+
+<Widget src="recall" height={420} />
+
+Things to try:
+
+- With **linear attention** and orthogonal keys, `fox` is read back perfectly. `cat` comes out
+  as orange + purple, and the repeated `dog` write doubles blue past what a colour can show.
+- Switch to the **delta rule**. Step 4 (`cat` → purple) sees orange already stored and writes
+  the purple-minus-orange difference. Step 5 (`dog` → blue again) writes zero, because the
+  memory already had it right. Nothing surprising, nothing written.
+- Raise **key overlap**. Now every write leaks into the other keys. Linear attention falls
+  apart. The delta rule still nails the key it just wrote, but earlier keys pick up small errors
+  from later writes. Real models put many more items through a 128-dimensional key space than
+  it has dimensions, so this is the normal case, not the edge case.
+- Lower **β**. The delta rule only moves part of the way to the new value, which the model can
+  use to say "this token is not worth fully committing".
+
+## Forgetting: one clock or many?
+
+The delta rule can only edit along the direction of the key it's writing. Anything stored
+along directions that no recent key touches stays forever, stale or not. So Gated DeltaNet
+adds a forget gate: before each write, multiply the state by α ∈ (0, 1]. α is computed from the
+current token, so the model can choose when to forget, but it's **one number per head**: every
+key channel fades at the same rate.
+
+KDA's change is to make α a **vector**, one rate per key channel:
+
+> **S**<sub>t</sub> = (**I** − β<sub>t</sub> **k**<sub>t</sub> **k**<sub>t</sub>ᵀ) Diag(**α**<sub>t</sub>) **S**<sub>t−1</sub> + β<sub>t</sub> **k**<sub>t</sub> **v**<sub>t</sub>ᵀ
+
+Read right to left: decay each channel by its own rate, erase along the new key, write the new
+value. (Expand the brackets and the middle part is the delta rule from above.)
+
+What a per-channel rate buys you is easiest to see from the read side. Something written L
+tokens ago has been multiplied by α<sub>i</sub> L times in channel i. A query that puts its weight
+on fast-decaying channels mostly hears recent tokens. One that leans on slow channels hears the
+distant past. The chart sets the decay rates by half-life and keeps α constant over time so the
+shape is easy to read. The model sets them per token.
+
+<Widget src="horizons" height={460} caption="Read weight by distance, assuming nothing later overwrote the token. Dashed lines are individual channels." />
+
+Things to try:
+
+- In **one gate per head** mode, drag the query slider. The curve doesn't move. Every query sees
+  the same recency profile, set by one half-life for the whole head.
+- Switch to **one gate per channel** and drag it again. Leaning on channel 0 gives a sharp,
+  local window. Leaning on channel 7 gives a long, flat tail. Somewhere in between you get a
+  mixture: a peak on the last few tokens and a long tail behind it, which no single exponential
+  can make.
+- Watch the red line (the lag by which half the read weight has arrived) move by orders of
+  magnitude with the query alone.
+
+That last point is why the Kimi Linear team argue KDA acts as a learned **positional
+encoding**. "How far back is this?" becomes something a query can ask for, not something
+baked into the head. It's also why their full-attention layers drop RoPE entirely.
+
+## The rest of Kimi Linear
+
+KDA isn't used alone. Kimi Linear interleaves three KDA layers with one full-attention layer
+(Multi-head Latent Attention, the compressed-KV attention from DeepSeek), so only a quarter of
+the layers keep a KV cache that grows with context. The report quotes up to a 75% smaller KV
+cache and up to 6× faster decoding at a million tokens of context, on a 48B-parameter
+mixture-of-experts model with 3B parameters active per token.
+
+The recurrence above is written one token at a time, which is how decoding works. Training
+can't afford a sequential loop over a long sequence, so KDA uses a chunkwise algorithm: tokens
+are processed in blocks, with matrix multiplies inside each block and the recurrence only
+between blocks. Tying the per-channel decay to the same **k** that appears in the erase term
+keeps that computation cheaper than a general diagonal-plus-low-rank update.
