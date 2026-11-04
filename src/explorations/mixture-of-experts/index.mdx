@@ -1,0 +1,114 @@
+---
+title: Mixture of experts
+summary: How a router sends each token to a few of many expert networks, and why training has to keep it from playing favourites.
+date: 2026-11-04
+tags: [machine-learning, transformers]
+draft: false
+---
+
+In a dense transformer, every token goes through every weight. Make the model twice as big and
+each token costs twice as much to process. A **mixture of experts** (MoE) layer breaks that link.
+It replaces the feed-forward block with many copies, called **experts**, and adds a small
+**router** that picks a few of them for each token. The model stores all the experts but runs only
+the chosen ones.
+
+So the question is: how does a token get matched to its experts, and what keeps this from going
+wrong?
+
+## Stored versus used
+
+Count only the feed-forward block, and make each expert the same size as the dense block it
+replaces. With E experts and the top k chosen per token, the layer stores E times the weights but
+spends only k times the compute. Change the sliders, or pick a real model.
+
+<Widget src="cost" height={300} />
+
+Mixtral 8x7B stores 46.7B parameters but uses about 12.9B per token. That's less than the 4× that
+"8, top-2" suggests, because attention layers aren't split into experts and every token uses them.
+Note that this saves *compute*, not *memory*: every expert still has to be loaded, because the
+next token might need any of them.
+
+The last row is the reason newer models use many small experts. Eight experts with top-2 can
+combine in 28 ways. 256 with top-8 gives about 400 trillion, so each token gets a much more
+specific mix of experts for the same compute.
+
+## The router
+
+The router is a single linear layer. For a token vector x it computes a score for each
+expert, wᵢ · x + bᵢ, and a softmax turns the scores into probabilities. The k most likely experts
+run, and their outputs are added together, weighted by their probabilities rescaled to sum to 1.
+Those weights are the **gates**.
+
+Below, the token lives in two dimensions so you can drag it around (a real token has thousands).
+Each coloured region is where that expert has the highest score.
+
+<Widget src="router" height={380} caption="A random 2-D router. Drag the dot or use the arrow keys." />
+
+Things to try:
+
+- Drag the token across a boundary with top-k at 1. The output jumps from one expert to another,
+  even though the token barely moved.
+- Set top-k to 2 and do it again. Close to the boundary both experts get gates near 0.5, so the
+  handover is smooth.
+- Drag the token far from the centre. The scores grow with distance, so the softmax gets sharper
+  and one gate approaches 1.
+
+The regions are always convex (each one is where one linear score beats all the others), so the
+router splits the space into slabs and wedges. Real routers have thousands of dimensions to do
+this in. What experts end up specialising in is less tidy than "the maths expert" and "the French
+expert". The Mixtral authors found little sign of topic specialisation; routing followed syntax
+and token identity more than subject matter.
+
+## Keeping the router fair
+
+The router is trained by gradient descent like everything else, and that causes a feedback loop.
+An expert that gets a few more tokens early on gets more gradient updates, so it gets better,
+so the router learns to send it even more tokens. Experts that get nothing never improve, so
+there's never a reason to try them. The layer **collapses** onto a few favourites and the rest are
+wasted parameters.
+
+The widget below trains a tiny MoE layer from scratch. Tokens come from eight clusters, and the
+target is a different linear rule in each one. Each expert is a single linear function, so the
+best the layer can do is give each cluster its own expert.
+
+<Widget src="training" height={470} caption="An 8-expert top-1 MoE layer trained with Adam on 128 tokens per step. Each run starts from a new random initialisation." />
+
+Press **train** with the balancing loss at 0. Usually a few experts take over several clusters
+each, and others go quiet. Their bars sit at zero and they never come back. The error stalls,
+because one linear function can't fit two clusters' different rules.
+
+Now set α to about 0.05, press **reset** and train again. Most runs end with all eight experts in
+use, roughly one per cluster, and a lower error. Some runs still merge two clusters; reset a few
+times to see the spread.
+
+The balancing term is from the Switch Transformer paper. With fᵢ the fraction of tokens sent to
+expert i and Pᵢ the router's average probability for it, it adds
+
+> α · E · Σᵢ fᵢ Pᵢ
+
+to the loss. It's smallest when both are spread evenly, so it nudges the router's probabilities
+away from busy experts and toward idle ones. It's a separate goal from the actual task, so set α
+too high and the router cares more about being even than about being right.
+
+### Capacity
+
+The **capacity factor** is a hardware constraint. Experts usually live on different devices, and
+each one gets a fixed-size buffer of tokens per batch so the work can be laid out in advance.
+Capacity 1.0 is exactly an even share; 1.25 allows 25% slack. Tokens routed to a full expert are
+**dropped**: they skip the layer and only the residual connection carries them forward. In the
+widget, the hatched part of a bar above the red line is dropped tokens.
+
+Try α = 0 with capacity 1.0. When routing is lopsided, a lot of tokens are dropped, and those
+dropped tokens send no learning signal back to the router. Balancing doesn't just save parameters,
+it keeps tokens from being thrown away.
+
+## Where it's gone since
+
+- **Shared experts.** DeepSeek's models run one or more experts for every token alongside the
+  routed ones, so common knowledge doesn't have to be copied into every expert.
+- **Fine-grained experts.** Many small experts with a larger k, as in the last row of the first
+  widget. Same compute, far more possible combinations.
+- **No auxiliary loss.** DeepSeek-V3 drops the balancing term. Instead it adds a bias to each
+  expert's score that's used only for picking the top k, not for the gates. After each step it
+  nudges the bias down for overloaded experts and up for idle ones. The task loss never has to
+  compete with a balancing goal.
