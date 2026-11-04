@@ -1,0 +1,101 @@
+---
+title: Multi-head latent attention
+summary: How DeepSeek shrinks the KV cache by caching one small latent per token and folding the key projection into the query.
+date: 2026-11-04
+tags: [machine-learning, transformers, attention]
+draft: true
+---
+
+When a transformer generates text, each new token attends to every token before it. Recomputing
+all those keys and values at every step would be wasteful, so inference engines keep them in a
+**KV cache**. For long contexts, that cache is often the thing that runs out of GPU memory first,
+before the weights or the compute do.
+
+Standard multi-head attention (**MHA**) caches a key and a value for every head in every layer.
+The usual fixes cut the number of key/value heads. Multi-query attention (**MQA**) keeps one,
+shared by every query head. Grouped-query attention (**GQA**) keeps a handful. Both save memory
+by giving heads less to tell apart, and both cost some quality.
+
+DeepSeek-V2 introduced a different trade, **multi-head latent attention** (MLA). Each token is
+squeezed into one small vector, the **latent** `c`, and only that gets cached. Every head still
+gets its own key and value, rebuilt from `c` by a per-head up-projection:
+
+> c = W<sub>DKV</sub> h,&emsp;k<sub>i</sub> = W<sub>UK,i</sub> c,&emsp;v<sub>i</sub> = W<sub>UV,i</sub> c
+
+DeepSeek-V3 has 128 heads of width 128, so MHA would cache 2 × 128 × 128 = 32,768 numbers per
+token per layer. MLA caches a 512-wide latent plus a 64-wide extra key (more on that below).
+
+<Widget src="cache" height={520} caption="Per-token cache for each scheme. The bars share a linear scale." />
+
+Push the context to 1M and look at the MHA total. Then compare MLA with GQA: at DeepSeek's shape
+MLA is under a third the size of GQA with 8 groups and only 2.25× MQA, yet it isn't sharing one key across all
+128 heads. Try shrinking the latent. The cache drops linearly, but in a real model a smaller
+latent means less room for the information the heads need.
+
+## Isn't rebuilding the keys expensive?
+
+It would be. If every step had to multiply each cached latent by `W_UK` for every head, MLA would
+trade memory for a lot of extra compute. It doesn't, because matrix multiplication is
+associative. The score for head *i* is
+
+> q<sub>i</sub> · k<sub>t</sub> = q<sub>i</sub><sup>T</sup> W<sub>UK,i</sub> c<sub>t</sub> = (W<sub>UK,i</sub><sup>T</sup> q<sub>i</sub>) · c<sub>t</sub>
+
+so you can multiply the *query* by `W_UK` once, giving an absorbed query q̃, and dot it straight
+against the cached latents. The keys never exist. The same trick works on the output side:
+`W_UV` folds into the output projection, so the values never exist either. At inference, each
+head attends directly in latent space. In effect it's MQA with one wide shared key, but each
+head reads it through its own learned lens.
+
+The widget below is one toy head with a 4-wide latent and 6 tokens of context. Each row is a
+cached token. The bar is the score computed the long way, by rebuilding the key. The thin tick
+is the score from the absorbed query. Hover a cell to see its value.
+
+<Widget src="absorb" height={430} caption="Two ways to compute the same attention scores. Cells are blue for positive and red for negative." />
+
+In **No RoPE** mode the ticks sit exactly on the bar ends for every token. Press **Shuffle** for
+new random weights; they always agree. Check the multiply counts as well. Rebuilding keys costs
+a full matrix product per cached token. Absorbing costs one matrix product per query plus a
+cheap dot product per token, and the gap widens as the context grows.
+
+## Where it breaks: RoPE
+
+Modern models encode position with **rotary embeddings** (RoPE). The query and each key are
+rotated by an angle proportional to their position, so the score depends on how far apart they
+are:
+
+> (R<sub>n</sub> q) · (R<sub>t</sub> W<sub>UK</sub> c<sub>t</sub>) = q<sup>T</sup> R<sub>t−n</sub> W<sub>UK</sub> c<sub>t</sub>
+
+Switch to **RoPE on keys**. Now there's a rotation stuck between `q` and `W_UK`, and it's a
+different rotation for every cached token. No single q̃ can absorb it. The rows go red, and the
+ticks drift away from the bars. Notice which row still agrees: the newest token, where t − n = 0
+and the rotation is the identity. Drag θ to 0 and RoPE vanishes, and everything agrees again.
+
+## The fix: decoupled RoPE
+
+DeepSeek's answer is to keep position out of the latent. Each head's key is split into two
+parts:
+
+- a **content** part, rebuilt from `c` with no rotation, so absorption still works, and
+- a small **RoPE** part (64 wide in DeepSeek-V3) that carries all the position information. It is
+  computed directly from the token, rotated, and **shared by every head**, so it's cached once
+  per token.
+
+The score is the sum of the two dot products. Switch to **Decoupled RoPE**. The dashed cells are
+the RoPE part: two extra numbers in the cache and in each key. The absorbed query is now
+`W_UKᵀ q` for the content half, with the rotated `q_R` appended. Every row agrees again, at any θ.
+
+That shared RoPE key is the second segment of the MLA bar in the first widget. It's why
+DeepSeek's cache is 512 + 64 = 576 numbers per token per layer and not 512.
+
+## What it costs
+
+- **Training compute** goes up a little. During training the keys and values are built
+  explicitly, and the down- and up-projections add parameters. DeepSeek also compresses the
+  queries through a 1536-wide latent, which saves activation memory during training but doesn't
+  affect the cache.
+- **The latent is a bottleneck.** Every head's key and value has to come out of 512 numbers. The
+  bet, which DeepSeek's results support, is that a learned low-rank space holds what attention
+  needs better than throwing away most of the heads, as MQA and GQA do.
+- **Kernels are more involved.** Absorbing the weights changes the shapes the attention kernel
+  sees: one wide shared key, many heads. Getting the full speedup needs kernels written for that
+  layout.
