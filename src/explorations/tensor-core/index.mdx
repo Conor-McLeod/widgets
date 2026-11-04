@@ -1,0 +1,78 @@
+---
+title: What a Tensor Core does
+summary: A GPU unit that does a whole small matrix multiply per clock, why that's cheaper than many scalar multiply-adds, and why it adds in higher precision.
+date: 2026-11-04
+tags: [gpu, hardware, numerics, floating-point]
+---
+
+Almost all the arithmetic in training or running a neural network is matrix multiplication. A GPU's
+ordinary cores do it one **fused multiply-add** (FMA) at a time: `acc = a × b + acc`, one per lane per
+clock. NVIDIA's Volta GPUs (2017) added a second kind of unit, the **Tensor Core**. Its basic
+operation is a whole small matrix multiply-accumulate:
+
+> D = A · B + C   where A, B, C and D are 4×4 tiles
+
+That's 4 × 4 × 4 = 64 multiplies and 64 adds. A Volta Tensor Core does all of them every clock.
+
+Run the same tile both ways below. The FMA unit walks through the output one product at a time. The
+Tensor Core gets the same answer in one clock. Click any cell of D to see its sum written out.
+
+<Widget src="mma" height={470} />
+
+## Why it's cheaper, not just wider
+
+You could get the same throughput with 64 separate FMA units. The trouble is feeding them. Each scalar
+FMA has to be decoded as an instruction and has to read three operands from the register file, and on a
+modern chip moving data costs more energy than the arithmetic does. After a full run the counters show:
+
+- **64 instructions vs 1.** One instruction drives the whole tile, so there's far less scheduling work per multiply.
+- **192 register reads vs 48.** The Tensor Core reads each value of A, B and C once (16 + 16 + 16) and wires
+  it to every multiplier that needs it. Each element of A is used by four products, and so is each element
+  of B. The scalar version fetches them again every time.
+
+Inside, a Tensor Core is basically 64 multipliers feeding 16 adder trees, one per output, each summing four
+products plus the value from C. The reuse is fixed in the wiring, so no instruction has to ask for it.
+
+The payoff on a V100 was about 125 TFLOPS from its Tensor Cores against 15.7 TFLOPS of ordinary FP32,
+roughly 8× on the same chip.
+
+## Low-precision inputs, high-precision sums
+
+The inputs are FP16, half-precision floats with an 11-bit significand. Multiplying two of them gives at
+most a 22-bit significand, which fits in FP32 exactly, so the products are exact. The Tensor Core then
+adds them into an **FP32 accumulator**. It matters because a real matrix multiply sums thousands of
+products into each output.
+
+Below, a dot product of random inputs between 0 and 1 is summed two ways. Slide the length up and watch
+the FP16 sum. FP16 values between 1024 and 2048 are a whole unit apart, so any product under 0.5 rounds
+away, and that's most of them. Above 2048 the gap is 2, so nothing below 1 can ever be added and the sum stops growing. (The
+[float64 exploration](/float64) shows why the gaps double at each power of two.) FP32 has 13 more
+significand bits and tracks the exact sum closely.
+
+<Widget src="accumulate" height={470} caption="Each product is an exact product of two FP16 numbers. Only the accumulator's format changes." />
+
+That's why "mixed precision" training stores weights and activations in a small format but accumulates in
+FP32: the small format halves memory traffic and is what the Tensor Cores run fastest on, and the wide accumulator keeps
+long sums from drifting.
+
+## Building a big multiply from tiles
+
+A 4×4 tile is tiny. Large matrices are cut into tiles, and each output tile is computed by stepping along
+the shared dimension: D<sub>ij</sub> += A<sub>ik</sub> · B<sub>kj</sub> for each k. The output tile stays in
+registers the whole time, and only the A and B tiles move. This 16×16×16 multiply takes 64 Tensor Core
+operations.
+
+<Widget src="tiling" height={540} caption="Highlighted: the two input tiles feeding the current operation. The numbers count how often each tile has been used." />
+
+When it finishes, every A and B tile has been read four times, once for each output tile in its row or
+column. Real kernels arrange the order so a tile is loaded from memory once and reused while it's still in
+fast on-chip storage. Bigger tiles mean more reuse per byte loaded, which is one reason the hardware tiles have
+kept growing.
+
+## Since Volta
+
+Programmers never address a single Tensor Core. A warp of 32 threads issues one matrix instruction on a
+larger tile, such as 16×16×16, which the hardware splits across its Tensor Cores over a few clocks, with
+the tiles spread across the threads' registers. Later generations kept the same idea and changed the
+numbers. Each Tensor Core does more multiply-adds per clock, and the input formats have grown from FP16 to
+BF16, TF32, INT8, FP8 and smaller ones. The accumulator stays wide.
