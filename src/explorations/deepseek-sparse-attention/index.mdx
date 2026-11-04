@@ -1,0 +1,130 @@
+---
+title: DeepSeek sparse attention
+summary: How DeepSeek-V3.2 lets each token attend to only 2048 earlier tokens, picked by a tiny "lightning indexer" that scores the whole context cheaply.
+date: 2026-11-04
+tags: [machine-learning, transformers, attention, llm, inference]
+draft: true
+---
+
+In ordinary (dense) attention, a token at position <M t="t" /> compares its query with the key of every
+token before it, then mixes their values by the softmax of those scores. Each new token therefore
+costs work proportional to the length of the context, and a whole sequence costs <M t="O(L^2)" />. At
+128K tokens of context that is the dominant expense, both in prefill and in every decoding step.
+
+Yet after the softmax, most of those weights are tiny. A query usually puts its weight on a
+handful of keys: some nearby tokens, a few far-back tokens whose content it needs, and a sink at
+the start. If you knew in advance which keys mattered, you could skip the rest.
+
+[Sliding-window attention](/sliding-window-attention) guesses "the most recent ones". That's cheap
+but blind: anything outside the window is gone, however relevant. **DeepSeek Sparse Attention**
+(DSA), introduced in DeepSeek-V3.2-Exp in September 2025, guesses by *content*. A small, fast
+scorer called the **lightning indexer** rates every earlier token, and the real attention then
+runs over only the top <M t="k = 2048" /> of them.
+
+## Two passes: score cheaply, attend expensively
+
+For query token <M t="t" /> and each earlier token <M t="s" />, the indexer computes
+
+<M block t="I_{t,s} = \sum_{j=1}^{H^I} w^I_{t,j}\,\operatorname{ReLU}\!\left(q^I_{t,j} \cdot k^I_s\right)" />
+
+That is attention-like, but deliberately stripped down. It has a few small heads <M t="j" />, each with
+its own query <M t="q^I_{t,j}" /> but one key <M t="k^I_s" /> shared by all of them. A per-head weight <M t="w^I_{t,j}" />,
+also computed from the query token, says how much to trust each head. There's no softmax and no
+value mixing, just a ReLU, which is cheap and keeps the scores easy to compare. And it runs in FP8.
+The indexer's only job is to *rank* keys, not to produce an output.
+
+Then the main attention runs as usual, but only over the selected set:
+
+<M block t="u_t = \operatorname{Attn}\!\left(h_t,\ \{\, c_s \mid I_{t,s} \in \operatorname{Top\text{-}k}(I_{t,:}) \,\}\right)" />
+
+Here <M t="c_s" /> is the cached entry for token <M t="s" />. In DeepSeek-V3.2 that's the
+[MLA latent](/mla), and that detail matters: MLA's absorbed form behaves like multi-query attention,
+where every head reads the same latent, so one selection per token works for all 128 heads.
+
+The widget below is a toy version of one query looking back over 48 tokens. The top panel is the
+softmax weight dense attention *would* give each key. The bottom panel is what the indexer thinks.
+Blue keys get read; red is weight the query wanted but won't get.
+
+<Widget src="pick" height={470} caption="One query, toy numbers. The readout compares the chosen keys' share of dense attention weight with the best any $k$ keys could do." />
+
+Things to try:
+
+- Start on **last k**, a sliding window. It catches the nearby tokens and misses the far-back
+  spikes, so it covers only a small share of the weight.
+- Switch to **exact top-k**. This is the oracle: it reads the <M t="k" /> heaviest keys, wherever they are.
+  It's the best any <M t="k" />-key subset can do, but it needs the dense scores you were trying to avoid.
+- Switch to **indexer top-k** and drag **indexer warm-up** to 0. An untrained indexer picks
+  almost at random. Raise it and watch the ranking line up with the top panel and the coverage
+  climb to the oracle's. The KL readout measures how far the indexer's view (put through a softmax)
+  is from the dense attention.
+- Lower <M t="k" /> to 3 or 4. Even a good indexer starts to lose weight when the budget is
+  smaller than the number of keys that really matter.
+
+## The mask is different for every row
+
+With a sliding window every query reads the same diagonal band. DSA's pattern is decided per query
+by content, so each row of the mask is its own scattered set.
+
+<Widget src="mask" height={640} caption="Rows are queries, columns are keys. Shade is the weight dense attention gives that key." />
+
+Hover or tap a row. In **DSA top-k** mode, notice the cells far left of the diagonal: the sink at
+column 0 and the content matches, which a window of the same size can't reach. Compare the
+**avg weight covered** between **sliding window** and **DSA top-k** at the same <M t="k" />. Both read the
+same number of keys; DSA spends that budget better.
+
+The stats also show the catch. DSA still computes an indexer score for every (query, key) pair, so
+the indexer itself is quadratic. The saving comes from it being much cheaper per pair than the
+main attention.
+
+## Where the saving comes from
+
+So DSA doesn't remove the <M t="O(L^2)" />. It shrinks its constant and moves it into the cheap indexer.
+Per new token, with <M t="L" /> tokens of context, the cost is roughly
+
+<M block t="\underbrace{r \cdot L}_{\text{indexer}} \;+\; \underbrace{\min(L, k)}_{\text{main attention}} \qquad \text{vs.} \qquad \underbrace{L}_{\text{dense}}" />
+
+where <M t="r" /> is the indexer's cost per key as a fraction of the main attention's. A rough count for
+DeepSeek-V3.2 puts <M t="r" /> around <M t="1/30" />. The main attention has 128 heads, each scoring a
+576-wide key and mixing a 512-wide value. The indexer has 64 heads of width 128, scoring only,
+in FP8.
+
+<Widget src="cost" height={420} caption="Attention cost of one new token, as a share of dense attention's cost at 128K. Counts multiply-adds only." />
+
+Move along the chart, then tick **zoom** to see the DSA curve up close. Below <M t="k" /> tokens the two curves coincide, because DSA reads everything and
+the indexer is pure overhead. Past <M t="k" /> the main-attention part flattens at <M t="k" /> keys, and the
+only thing still growing is the indexer's slope <M t="r" />. Make the indexer more expensive and the
+saving shrinks, with <M t="1/r" /> as the ceiling. That's why it uses ReLU, no softmax, few heads and FP8.
+
+Real speedups also depend on memory traffic and kernel efficiency, which this ignores. DeepSeek's
+own measurements of V3.2 at 128K show prefill and especially decoding getting several times
+cheaper per token than V3.1, with the gap widening as the context grows.
+
+## Teaching the indexer what to pick
+
+The indexer is new, so it starts out knowing nothing; that's the warm-up slider above. DeepSeek
+didn't train V3.2 from scratch. They continued from V3.1-Terminus, which already had dense
+attention, in two stages:
+
+1. **Dense warm-up.** Keep dense attention and freeze the whole model except the indexer. The
+   target is the main attention's distribution for each query, summed over heads and normalised.
+   The indexer learns to match it by minimising
+   <M t="\mathrm{KL}\!\left(p_{t,:} \,\|\, \operatorname{softmax}(I_{t,:})\right)" />. This took only 1000 steps,
+   about 2.1B tokens.
+2. **Sparse training.** Switch on top-k selection with <M t="k = 2048" /> and train everything. The
+   main model learns from the language-modelling loss alone, now attending over only the selected
+   keys. The indexer keeps its KL loss, computed only over the keys it selected, and its input is
+   detached so its gradients don't flow into the main model. This stage ran for about 944B tokens.
+
+The point of the warm-up is that the model's existing attention already knows what's relevant.
+The indexer just has to learn to predict it cheaply before anything relies on its choices. After
+the second stage, DeepSeek reported V3.2-Exp roughly matching V3.1-Terminus on benchmarks while
+being much cheaper at long context.
+
+## How it compares
+
+- **Sliding window** picks by position. It's free to decide but can't see past the window
+  in one layer.
+- **Block-sparse** schemes such as DeepSeek's earlier NSA (native sparse attention) pick whole
+  blocks of tokens, which is kinder to GPU memory access but coarser.
+- **DSA** picks individual tokens by content. The cost is an extra quadratic pass, and that pass
+  is cheap enough not to matter much.
