@@ -1,0 +1,91 @@
+---
+title: Swizzling in CUTLASS
+summary: Why GEMM kernels XOR the column of each shared-memory chunk with its row, and how CuTe's Swizzle<B, M, S> turns that trick into three numbers.
+date: 2026-11-04
+tags: [gpu, hardware, data-structures]
+---
+
+A fast matrix multiply on an NVIDIA GPU stages tiles of <M t="A" /> and <M t="B" /> in **shared memory**: the
+copy from global memory writes them in, then the Tensor Core instructions read them back out. Read CUTLASS or CuTe
+kernel code and the shared-memory layouts are rarely plain. They're wrapped in something like
+`composition(Swizzle<3,3,3>{}, ...)`. This page is about what that does and why every serious kernel bothers.
+
+## Shared memory has banks
+
+Shared memory is split into 32 **banks**, each 4 bytes wide, with consecutive 4-byte words in consecutive banks. So
+the bank of a byte address <M t="a" /> is <M t="\lfloor a/4 \rfloor \bmod 32" />. Each bank serves one word per clock. If
+the threads of a warp all hit different banks, the request goes through in one pass. If two threads want different
+words from the same bank, the hardware splits the request into several passes (**wavefronts**). That's a **bank conflict**,
+and an <M t="n" />-way conflict makes the access <M t="n" /> times slower.
+
+GEMM kernels move data in 16-byte vectors (8 half-precision values), and a warp's 16-byte request is served 128 bytes at a time:
+8 threads per wavefront. 128 bytes is exactly one pass over all 32 banks, so it's simplest to think of four banks
+as one 16-byte **bank group**. Eight threads, eight bank groups: conflict-free means each thread lands in a different group.
+
+## The problem: columns of a row-major tile
+
+Take a tile of 8 rows by 64 half-precision values, stored row-major. Each row is 128 bytes, so it covers every bank
+group exactly once, and chunk <M t="c" /> of every row sits in bank group <M t="c" />.
+
+Writing the tile is fine: a copy has eight threads each write one chunk of the same row, which spans all eight groups.
+Reading it for a Tensor Core is not. The `ldmatrix` instruction loads an <M t="8 \times 8" /> sub-matrix by having eight threads
+each fetch one 16-byte row of it, and those eight rows lie in the same column of chunks. In a row-major tile they're all in
+the same bank group, so the read takes 8 wavefronts instead of 1.
+
+Below, start with **Row-major** and **Read a column**: every chunk lights up in the same bank group and the histogram
+stacks to 8. Switch the layout to see what fixes it.
+
+<Widget src="conflicts" height={620} caption="Each cell is 16 bytes. On the right, memory is drawn in 128-byte lines, so a column is a bank group and the numbers say which logical chunk lives there." />
+
+Things to notice:
+
+- **Padding works but costs space.** Adding 16 unused bytes to each row shifts row <M t="r" /> by <M t="r" /> bank groups, so a column
+  spreads across all eight. It wastes 12.5% of a scarce resource, and the tile is no longer a power-of-two size, which makes address arithmetic
+  and the hardware copy engines' layouts awkward.
+- **Swizzling permutes instead of padding.** Chunk <M t="(r, c)" /> is stored at column <M t="c \oplus r" /> of row <M t="r" /> (XOR of the
+  low bits). No bytes are wasted. Within a row, XOR with a fixed number is a permutation, so row writes stay conflict-free. Down a column,
+  <M t="c" /> is fixed and <M t="r" /> runs 0 to 7, so <M t="c \oplus r" /> takes eight different values.
+- **The width of the swizzle matters.** XOR with only the lowest bit of <M t="r" /> (32-byte swizzle) spreads a column over 2 groups: a 4-way conflict.
+  Two bits (64 B) gives 2-way. Three bits (128 B) gives 1. You need as many bits as it takes to count the rows that one read touches.
+
+## Swizzle&lt;B, M, S&gt; is three numbers
+
+CuTe doesn't think in rows and chunks. A layout is a function from coordinates to an integer offset, and a swizzle is a second
+function applied to that offset. `Swizzle<B, M, S>` is:
+
+<M block t="\text{swz}(o) = o \oplus \big( (o \mathbin{\&} \texttt{mask}) \gg S \big), \qquad \texttt{mask} = (2^B - 1) \ll (M + S)" />
+
+In words: take the <M t="B" /> bits that start at bit <M t="M + S" />, shift them down by <M t="S" />, and XOR them into the <M t="B" /> bits that start at bit <M t="M" />.
+
+- <M t="M" /> is how many low bits to leave alone: a run of <M t="2^M" /> elements moves as one unit. For 16-bit values and 16-byte chunks, <M t="M = 3" />.
+- <M t="S" /> is the distance between the two bit fields, which is the row length in units: <M t="2^S" /> units per row. For 128-byte rows of 16-byte chunks, <M t="S = 3" />.
+- <M t="B" /> is how many bits get mixed: <M t="2^B" /> rows before the pattern repeats. <M t="B = 3" /> is the 128-byte swizzle.
+
+So `Swizzle<3,3,3>` on half-precision offsets is exactly the "column XOR row" of the widget above. Click any unit below to see its
+offset go through the bit operation, and try the presets: the same physical pattern is `Swizzle<3,2,3>` for 32-bit elements and
+`Swizzle<3,4,3>` on byte addresses, because only <M t="M" /> depends on the element size.
+
+<Widget src="bits" height={560} caption="Darker means a higher destination column. Every row is a permutation of $0 \ldots 2^S-1$, and every column is too, as long as $B = S$." />
+
+Things to try:
+
+- Set <M t="B = 0" />. The mask is empty and the swizzle is the identity: every column of the grid is constant, which is the row-major layout that conflicts.
+- With <M t="B = S" />, each grid column contains every destination: that's the property that makes column reads conflict-free.
+  With <M t="B < S" />, the pattern only covers the low <M t="B" /> bits of the column and repeats every <M t="2^B" /> rows.
+- Change <M t="M" /> alone. The grid doesn't change, only which bits of the offset are involved. The swizzle never splits a unit, so
+  16-byte vector loads and stores still hit contiguous, aligned addresses.
+
+## Why it's a separate function
+
+Because the swizzle acts on the final offset, CuTe can write a shared-memory layout as `composition(Swizzle<3,3,3>{}, Layout<Shape<_8,_64>, Stride<_64,_1>>{})`:
+an ordinary row-major layout with the swizzle applied afterwards. Every partitioning and tiling operation works on the
+inner layout as usual, and the XOR is folded into the address at the end. It costs a couple of integer instructions,
+often computed at compile time when the coordinates are static.
+
+The same patterns turn up in hardware. Hopper's Tensor Memory Accelerator writes tiles into shared memory with a 32-, 64-
+or 128-byte swizzle mode, and the `wgmma` instructions read operands that are laid out the same way, so the kernel's
+CuTe layout just has to name the matching `Swizzle`.
+
+One naming trap: CUTLASS also has *threadblock swizzles* (like `GemmIdentityThreadblockSwizzle`). Those reorder which output tile each
+block of threads computes, to improve L2 cache reuse. Same word, unrelated trick. The [Tensor Core exploration](/tensor-core) covers what
+happens after the data leaves shared memory.
