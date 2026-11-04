@@ -1,0 +1,92 @@
+---
+title: Grouped-query attention
+summary: Why modern LLMs give several query heads one shared key/value head, and what that buys at inference time.
+date: 2026-11-04
+tags: [machine-learning, transformers]
+draft: false
+---
+
+Open the config of almost any recent open-weights LLM and you'll find two head counts.
+Llama 2 70B has `num_attention_heads: 64` but `num_key_value_heads: 8`. Why would a model
+have eight times more query heads than key and value heads?
+
+## The cost is the cache
+
+In ordinary **multi-head attention** (MHA), each head has its own query, key and value projection.
+When a model generates text one token at a time, it saves the keys and values of every earlier
+token so it doesn't have to recompute them. This is the **KV cache**, and it grows with
+layers × heads × head size × context length.
+
+Decoding one token does very little arithmetic, but it has to read every weight and the whole
+KV cache from memory. So decoding speed is limited by memory bandwidth, and at long contexts or
+large batches the cache, not the weights, takes up most of that bandwidth.
+
+**Multi-query attention** (Shazeer, 2019) took this to the extreme: keep all the query heads but give them
+a single shared key/value head. That shrinks the cache by the number of heads, but it costs quality.
+**Grouped-query attention** (Ainslie et al., 2023) sits in between. The query heads are split into
+groups, and each group shares one key/value head.
+
+Pick a number of K/V heads below. With 8 you have multi-head attention, with 1 multi-query, and anything in between
+is grouped-query. Hover a head to see its group. Only the bottom row is cached, so the cache shrinks
+in proportion to the number of K/V heads.
+
+<Widget src="heads" height={360} caption="Eight query heads reading from a shared pool of key/value heads. Head dimension 128." />
+
+## Shared keys, different attention
+
+Sharing a key head doesn't make the query heads in a group redundant. Each one still has its own
+query projection, so each asks a different question of the same keys and can attend to different tokens.
+The parameters you lose are in the K and V projections, which are a small part of the model.
+
+The GQA paper doesn't have to train these models from scratch. It converts an existing multi-head
+checkpoint by **mean-pooling** the key and value heads in each group, then continues pretraining
+for about 5% of the original compute so the queries adapt to the shared keys. The widget below
+does that conversion on a toy layer with random weights: 8 heads, 6 tokens, causal attention.
+Each square is one head's attention pattern. Rows are query positions, columns are the
+tokens attended to, and darker means more weight. Δ is how far each head's pattern moved from the original.
+
+Things to try:
+
+- Going from 8 to 4 to 2 to 1 K/V heads. Δ grows as more heads share a key, but even with one
+  shared key the heads still attend to different tokens.
+- Toggling **show** between *shared K* and *original* to see what changed.
+- Switching to **keep first**: the first head of each group keeps its original pattern (Δ 0), while the others
+  are forced onto a key they were never trained with. The paper found mean-pooling recovers quality faster.
+
+<Widget src="patterns" height={480} caption="Random weights, so the patterns themselves mean nothing. Watch how much they change." />
+
+Mean-pooling also averages away some of the keys' variance, which makes the attention flatter. That's
+part of why the short uptraining step matters. A model trained with GQA from the start never has this problem.
+
+## What it saves in practice
+
+Here are real model shapes. The cache size is
+`2 (K and V) × layers × K/V heads × head dim × bytes × tokens × batch`.
+Push the context and batch up and compare the cache with the weights.
+
+<Widget src="cache" height={460} caption="Weights assume bf16. The share is cache ÷ (cache + weights), the bytes each generated token has to read." />
+
+For Llama 2 70B at an 8k context, multi-head attention would need about 21 GB of cache per sequence.
+With 8 K/V heads it needs 2.7 GB. At 32 sequences the MHA cache would be five times larger than the
+weights. With GQA, the same memory holds eight times as many concurrent sequences or eight times as much context.
+
+GQA doesn't make attention itself cheaper: every query head still computes its own scores against
+every cached key. What it cuts is the memory those keys and values take up and the bandwidth spent
+reading them, which during decoding is where the time goes.
+
+## In code
+
+The change to an attention layer is small. Project to fewer K/V heads, then reuse each one for its
+group of queries:
+
+```python
+q = x @ W_q  # (T, n_q  * d) -> (n_q,  T, d)
+k = x @ W_k  # (T, n_kv * d) -> (n_kv, T, d)   <- this is what gets cached
+v = x @ W_v  # (T, n_kv * d) -> (n_kv, T, d)
+
+k = k.repeat_interleave(n_q // n_kv, dim=0)   # (n_q, T, d)
+v = v.repeat_interleave(n_q // n_kv, dim=0)
+out = softmax(q @ k.T / sqrt(d) + causal_mask) @ v
+```
+
+Fast kernels skip the `repeat_interleave` and index the shared head directly, so the copy never exists in memory.
