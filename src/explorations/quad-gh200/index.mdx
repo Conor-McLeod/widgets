@@ -1,0 +1,112 @@
+---
+title: Inside a quad GH200 node
+summary: Four Grace Hopper superchips, one address space, and a bandwidth ladder that drops 160× from a GPU's own HBM to the network port.
+date: 2026-11-10
+tags: [gpu, hardware, inference]
+draft: true
+---
+
+The building block of CSCS's Alps supercomputer is a **quad GH200 node**: four NVIDIA Grace Hopper
+superchips on one board, two boards to a blade, 2,688 of those nodes in the GH200 partition. The headline is
+that the node is a single machine. 288 CPU cores, 4 GPUs and 896 GB of memory share one address space, so
+any core or GPU thread can load from any byte of it. The catch is that the bandwidth behind that load depends
+enormously on where the byte lives. This page is about the parts, the wiring between them, and what the
+wiring means for where you put data.
+
+## One superchip
+
+A GH200 is two dies on one module.
+
+- **Grace** is a 72-core Arm CPU (Neoverse V2, four 128-bit SVE2 units per core, 1 MB of L2 each, 117 MB of
+  shared L3). Its memory is **LPDDR5X**, the low-power DRAM family used in phones, stacked up to many
+  channels: on Alps 128 GB per Grace at about <M t="500\ \text{GB/s}" />. The point of LPDDR5X over DDR5 is energy per bit; the
+  point of the many channels is bandwidth per socket.
+- **Hopper** is an H100 GPU: 132 SMs, 50 MB of L2, and on the GH200 variant 96 GB of **HBM3** at
+  <M t="4\ \text{TB/s}" />, versus 80 GB at 3.35 TB/s on the H100 SXM card. Dense BF16 tensor-core throughput is about
+  989 TFLOP/s ([the Tensor Core page](/tensor-core) covers what that means).
+- **NVLink-C2C** joins them: a chip-to-chip link with <M t="450\ \text{GB/s}" /> in each direction, 900 total. That's 7× a
+  PCIe Gen5 x16 slot, and unlike PCIe it is **cache coherent**. The GPU's page tables can point at CPU memory
+  and the CPU's at GPU memory; a plain pointer dereference works from either side, and atomics work across
+  the link. NVIDIA calls the GPU's view of LPDDR5X *extended GPU memory*: each Hopper can address its own
+  96 GB plus its Grace's 128 GB.
+
+Coherence is the part that makes the superchip different rather than merely faster. A CPU on a
+PCIe H100 box copies data into the GPU with `cudaMemcpy`; here, `malloc` memory can simply be handed to a
+kernel, and the hardware moves cache lines as they're touched.
+
+## Four of them
+
+The node wires four superchips together with two separate fabrics.
+
+- **NVLink 4 between the GPUs.** Each Hopper has 18 NVLink 4 ports at 25 GB/s per direction each, 450 GB/s in
+  total. In an NVSwitch system those all go to switches; in the quad node they're split <M t="18 = 3 \times 6" /> and run
+  point-to-point, so every GPU has a direct <M t="6 \times 25 = 150\ \text{GB/s}" /> link to each of the other three.
+- **A coherent link between the CPUs.** The Graces are also connected all-to-all, which is what lets the four
+  superchips boot as one Linux image with eight NUMA nodes: 0–3 for the four LPDDR5X pools, 4, 12, 20 and 28 for
+  the four HBM3 pools. NVIDIA doesn't publish this link's bandwidth; CSCS's measurements show core-to-core
+  latency across it is far higher than within one Grace.
+- **One NIC per superchip.** Each Grace drives an HPE Slingshot 11 adapter over PCIe Gen5: a 200 Gb/s port,
+  25 GB/s per direction, four per node.
+
+CPU traffic to another superchip stays on the CPU-side fabric. GPU traffic goes over NVLink, and if the
+target is a peer's LPDDR5X it then crosses that peer's C2C link too. Pick a requester and a memory below to
+see which links a load crosses and which one sets the speed.
+
+<Widget src="topology" height={640} caption="Solid arcs are NVLink 4, dashed arcs the CPU-side coherent links. Click a processor, then a memory. Measured figures are from Fusco et al. on Alps." />
+
+Things to try: Hopper 0 reading each of the eight memories in turn. Only its own HBM3 is fast. Its own
+LPDDR5X is nine times slower, and anything on another superchip is 27 times slower, however much of the
+node's 896 GB is technically in reach.
+
+## The ladder
+
+Put all of that on one axis and the structure is a ladder with roughly an order of magnitude between rungs.
+HBM3 sits at 4 TB/s. The three ways off a GPU die, C2C, all-NVLink and LPDDR5X, cluster around 450–500 GB/s.
+A single NVLink peer is 150. The network port is 25.
+
+<Widget src="ladder" height={560} caption="Slide the payload to turn each bandwidth into a time. Presets: one HBM's worth, a 70B-parameter model in BF16, and the node's entire memory." />
+
+The right-hand column is the useful way to read the ladder. A Hopper can do about 989 TFLOP/s of BF16
+matrix arithmetic. To keep that busy from a memory source of bandwidth <M t="B" />, a kernel must do
+
+<M block t="I = \frac{989 \times 10^{12}\ \text{FLOP/s}}{B}" />
+
+floating-point operations per byte it loads. From HBM3 that's about 247 FLOP/byte, which a large GEMM
+reaches comfortably. From the Grace's memory over C2C it's 2,200; from a peer GPU's memory it's 6,600, and
+almost nothing gets there. Fusco et al. ran cuBLAS GEMMs with one operand moved out of HBM and watched the
+tensor-core datatypes fall from compute-bound to heavily memory-bound. The lesson is that the unified address
+space is a convenience for *placing* data and a trap for *streaming* it: the bulk of a hot working set still
+has to be in HBM.
+
+Advertised bandwidth is also an upper bound. On Alps, a Hopper reading its own LPDDR5X reached 93% of the
+C2C figure, a Grace reading HBM about 53%, and any path crossing both NVLink and C2C under 60%. Copies that
+traverse one link in both directions (LPDDR5X to LPDDR5X on the same superchip) get half.
+
+## What the capacity is for
+
+So why bolt 512 GB of slower memory onto 384 GB of fast memory? Because a working set that spills a little
+beats one that doesn't fit at all, and because the ladder makes spilling *predictable*. The widget below
+places a model's weights on the node in bandwidth order: each working GPU's own HBM3 first, then its Grace's
+LPDDR5X over C2C, then idle superchips' memory over NVLink. Decoding one token has to read every weight once,
+and the three channels can stream concurrently, so the fastest possible step is set by the tier that takes
+longest.
+
+<Widget src="fit" height={560} caption="Weights only. Tokens per second is an upper bound: a real decode step also reads the KV cache and does an all-reduce between GPUs." />
+
+Try a 70B model in BF16 on all four GPUs: 35 GB per GPU, all in HBM, with a ceiling of about 110 tokens/s. Push
+to 405B and the 202 GB per GPU spills past the 96 GB of HBM into LPDDR5X; the C2C tier becomes the bound and the
+ceiling falls to roughly a fifth of what all-HBM would give. Drop to one GPU and the same model has to pull most of itself across NVLink at
+150 GB/s per peer. The cliffs are exactly the rungs of the ladder.
+
+## Beyond the node
+
+Four ports at 25 GB/s give a node 100 GB/s each way into the Slingshot network, about 2.5% of one HBM's
+bandwidth and an eighteenth of what the four GPUs can push over NVLink among themselves. That ratio is why the node is the
+unit worth understanding: within it, data placement is a question of which rung; across nodes, it is a
+question of how rarely you can afford to communicate at all.
+
+### Sources
+
+- NVIDIA, [Grace Hopper Superchip architecture in depth](https://developer.nvidia.com/blog/nvidia-grace-hopper-superchip-architecture-in-depth/) and the GH200 datasheet.
+- L. Fusco et al., [Understanding Data Movement in Tightly Coupled Heterogeneous Systems: A Case Study with the Grace Hopper Superchip](https://arxiv.org/abs/2408.11556), 2024. Measurements on Alps quad GH200 nodes.
+- CSCS, [Alps hardware](https://docs.cscs.ch/alps/hardware/).
