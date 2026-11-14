@@ -1,0 +1,111 @@
+---
+title: Sinusoidal positional encoding
+summary: How the original Transformer stamps each token with its position using a bank of sine and cosine clocks running at different speeds.
+date: 2026-11-14
+tags: [machine-learning, transformers, attention]
+draft: true
+---
+
+Self-attention has no idea what order its inputs are in. Every token scores every other token with a dot
+product, then takes a weighted sum, and neither step looks at where the tokens sit. Shuffle the input and
+each token's output stays the same; the outputs just come back shuffled. "Dog bites man" and "man bites dog"
+look like the same bag of words.
+
+The original Transformer ([Vaswani et al., 2017](https://arxiv.org/abs/1706.03762)) fixed this by adding a
+**positional encoding** to each token embedding before the first layer. It's a vector of
+size <M t="d_{\text{model}}" /> that depends only on the position <M t="p" />. Nothing about it is learned. It's built from sines and cosines:
+
+<M block t="\operatorname{PE}(p)_{2i} = \sin(p\,\omega_i), \qquad \operatorname{PE}(p)_{2i+1} = \cos(p\,\omega_i), \qquad \omega_i = \frac{1}{10000^{2i/d_{\text{model}}}}" />
+
+That looks arbitrary at first. Why sines, why pairs, and why 10000? The widgets below answer these one at a time.
+
+## A bank of clocks
+
+Take the dimensions two at a time. Pair <M t="i" /> is <M t="(\sin p\,\omega_i,\ \cos p\,\omega_i)" />, which is a point on the unit
+circle at angle <M t="p\,\omega_i" />. So you can think of each pair as a clock hand. Every step forward in position turns
+hand <M t="i" /> by <M t="\omega_i" /> radians, and it comes back round every <M t="\lambda_i = 2\pi / \omega_i" /> positions.
+
+The frequencies fall off geometrically, so pair 0 spins once every 6.3 positions and the last pair takes
+thousands of positions to make one turn. Below is a tiny <M t="d_{\text{model}} = 16" /> encoding, with 8 hands.
+The numbers under each dial are the two entries of the vector that the hand stands for.
+
+- Press **play** and watch the hands. It works like an odometer, or the bits of a binary counter. The fast
+  hands tell nearby positions apart, and the slow hands tell you roughly where you are. No two positions put all eight hands in the same place.
+- The fast hands wrap round often, so on their own they're ambiguous: positions 0 and 44 look almost the same on hand 0.
+  The slower hands break the tie.
+
+<Widget src="clocks" height={440} />
+
+### Shifting is a rotation
+
+Now set the **offset** <M t="k" /> to something like 5. The dashed hands show position <M t="p + k" />, and the arc
+shows how far each hand turned to get there. Then drag <M t="p" /> around. **The arcs don't change.** Going <M t="k" /> steps
+forward turns hand <M t="i" /> by <M t="k\,\omega_i" />, wherever you start.
+
+That's the property the paper was after. For each pair, moving by <M t="k" /> is a fixed rotation:
+
+<M block t="\begin{pmatrix} \sin (p+k)\omega_i \\ \cos (p+k)\omega_i \end{pmatrix} = \begin{pmatrix} \cos k\omega_i & \sin k\omega_i \\ -\sin k\omega_i & \cos k\omega_i \end{pmatrix} \begin{pmatrix} \sin p\,\omega_i \\ \cos p\,\omega_i \end{pmatrix}" />
+
+The matrix depends on <M t="k" /> but not on <M t="p" />. Stack those 2×2 blocks down the diagonal, and
+<M t="\operatorname{PE}(p+k)" /> is a single linear map of <M t="\operatorname{PE}(p)" />. The authors guessed this would make
+it easy for the model to learn "look 3 tokens back", because a linear layer can implement that shift in exactly the same way at every position.
+This is why the encoding uses sin *and* cos. A sine on its own can't be rotated by a linear map; you need both coordinates of the point.
+
+## The whole matrix
+
+Stack the encodings for every position side by side and you get the familiar striped picture. Each column below is one position's
+vector and each row is one dimension. The map shows all the sine rows first and then all the cosine rows, as many implementations
+store them. The order doesn't matter to the model, since the next layer is a linear map that can permute dimensions however it likes.
+In each half, the top rows are the fast clocks, and they flicker. Further down the rows
+are slower, until near the bottom they barely change across 128 positions: sines sit near 0 and cosines near 1. Hover to read off any entry and its wavelength.
+
+<Widget src="heatmap" height={560} caption="$\operatorname{PE}(p)$ for $p = 0 \ldots 127$. Red is $-1$, blue is $+1$." />
+
+Things to try:
+
+- Tick **interleave** to see the paper's order, where each sine row sits next to its cosine. The slow end turns into
+  alternating white and blue stripes: the same numbers, shuffled.
+
+- Move <M t="d_{\text{model}}" />. The wavelengths always run from <M t="2\pi" /> to almost <M t="2\pi \cdot 10000" />, so a bigger
+  model doesn't get faster or slower clocks, just more of them in between.
+- Turn the **base** down to 10. The slowest wavelength is now about <M t="2\pi \cdot 10 \approx 63" />, so every row cycles within the 128
+  positions on screen, and the bottom of the map stops being a smooth gradient. The base sets the longest stretch of positions the encoding can tell apart.
+  10000 was the paper's choice for sequences up to a few thousand tokens, with lots of room to spare.
+
+## Distance from dot products
+
+Attention compares vectors with dot products, so it's worth asking what the dot product of two encodings looks like.
+Each pair gives <M t="\sin a \sin b + \cos a \cos b = \cos(a - b)" />, so
+
+<M block t="\operatorname{PE}(p) \cdot \operatorname{PE}(q) = \sum_{i} \cos\big((p - q)\,\omega_i\big)" />
+
+The positions only enter through <M t="p - q" />. The plot shows this sum (divided by <M t="d_{\text{model}}/2" />, so it peaks at 1)
+for a fixed <M t="p" /> against every <M t="q" />. Drag on the plot, or use the slider, to move <M t="p" />. The curve slides along
+without changing shape. It peaks at <M t="q = p" />, drops off for nearby positions, and is the same on both sides, because cosine is even:
+on its own, the dot product can tell how far away a position is but not whether it's before or after.
+
+The red circle marks the position at least 4 steps away that looks most like <M t="p" />.
+
+- Set <M t="d_{\text{model}} = 2" />. With a single clock, the similarity is just <M t="\cos(p - q)" />. Position 84 is 44 steps
+  from <M t="p = 40" />, almost exactly 7 turns, so it scores 1.00 and is indistinguishable from <M t="p" /> itself.
+- Double <M t="d_{\text{model}}" /> a few times. Each new clock damps those false peaks. By 16 the red circle jumps to just outside the
+  excluded zone: the most similar distant position is now simply the closest one, and similarity mostly falls with distance.
+- The curve never drops to zero, though. Over 160 positions the slow clocks hardly turn, so each one adds about 1 to the sum,
+  and the floor sits around 0.45. Attention cares about differences between scores, so a constant floor costs little.
+- Now lower the **base**. At 100 the bump gets narrower and the floor drops to about 0. At 10 there's just a spike at <M t="p" />
+  and noise everywhere else. Every position is now very distinct, but the dot product no longer tells a position 2 steps away
+  from one 100 steps away. The base trades sharpness for a smooth sense of distance.
+
+<Widget src="similarity" height={380} caption="$\operatorname{PE}(p)\cdot\operatorname{PE}(q)$ divided by $d_{\text{model}}/2$." />
+
+## What came after
+
+The paper found that learned position embeddings worked about as well, and chose the sinusoids partly in the hope
+that they would extend to sequences longer than any seen in training. That hope mostly didn't pan out. Adding position to the
+embedding also mixes "what" and "where" into one vector before attention ever sees them.
+
+The idea that lasted is the rotation. **RoPE** ([Su et al., 2021](https://arxiv.org/abs/2104.09864)), used in LLaMA and most
+open models since, takes the same bank of frequencies <M t="\omega_i" /> with the same base of 10000. But instead of adding the
+encoding to the embedding, it *rotates* each pair of query and key coordinates by <M t="p\,\omega_i" />. Then the query–key dot
+product depends on position only through <M t="p - q" />, by construction, in every layer. It's the clocks above, applied directly where
+attention compares tokens.
