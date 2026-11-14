@@ -12,13 +12,15 @@ mostly wait. Checking five tokens in one pass costs about the same as generating
 
 **Speculative decoding** takes advantage of that. A cheap **draft** model guesses the next few tokens. The
 big **target** model runs once over all the guesses and keeps the longest prefix it agrees with,
-plus one token of its own at the first disagreement. With sampling, a draft token <M t="x" /> proposed
-with draft probability <M t="q(x)" /> is kept with probability
+plus one token of its own at the first disagreement. With sampling, a draft token $x$ proposed
+with draft probability $q(x)$ is kept with probability
 
-<M block t="\min\!\left(1,\ \frac{p(x)}{q(x)}\right)" />
+$$
+\min\!\left(1,\ \frac{p(x)}{q(x)}\right)
+$$
 
-where <M t="p" /> is the target's distribution. On a rejection, the replacement token is drawn from
-<M t="\max(0,\, p - q)" />, renormalised. The output then has exactly the distribution the target alone
+where $p$ is the target's distribution. On a rejection, the replacement token is drawn from
+$\max(0,\, p - q)$, renormalised. The output then has exactly the distribution the target alone
 would have produced, so the speedup is lossless. How big it is depends on two things: how many tokens get
 accepted per target pass, and how little the draft costs.
 
@@ -31,7 +33,7 @@ and up to 6.5× for EAGLE-3.
 
 A separate small draft model, say a tiny model from the same family, has to work out
 everything from the tokens alone. But the target has already done that work. Its last hidden state
-before the LM head, which the EAGLE paper calls the **feature** <M t="f" />, summarises everything
+before the LM head, which the EAGLE paper calls the **feature** $f$, summarises everything
 the model knows about what comes next. EAGLE's draft is one decoder layer that reads those features
 and predicts the next one. The target's own frozen LM head then turns each predicted feature into
 token probabilities. Features are smoother and more regular than tokens, so a single layer can
@@ -50,15 +52,17 @@ middle and gives a muddy distribution. Slide "how often am" toward 50% and it co
 to near-uniform. Switch the sampled token to "always" and the draft's top guess is simply wrong.
 
 EAGLE's fix is to also give the draft the token that was actually sampled, **one step ahead**.
-Position <M t="i" /> gets the feature <M t="f_i" /> together with the embedding of token <M t="t_{i+1}" />,
+Position $i$ gets the feature $f_i$ together with the embedding of token $t_{i+1}$,
 concatenated and projected back to the model width:
 
-<M block t="\hat f_{i+1} = \mathrm{Draft}\big(f_{\le i},\ e(t_{\le i+1})\big), \qquad q(t_{i+2}) = \mathrm{softmax}\big(W_{\mathrm{LM}}\, \hat f_{i+1}\big)" />
+$$
+\hat f_{i+1} = \mathrm{Draft}\big(f_{\le i},\ e(t_{\le i+1})\big), \qquad q(t_{i+2}) = \mathrm{softmax}\big(W_{\mathrm{LM}}\, \hat f_{i+1}\big)
+$$
 
 Now the next feature is (almost) a deterministic function of the inputs, and the blue dot lands on
 the right branch whichever token you pick.
 
-The draft is trained with two losses: a Smooth L1 regression of <M t="\hat f" /> onto the target's real
+The draft is trained with two losses: a Smooth L1 regression of $\hat f$ onto the target's real
 feature, and a cross-entropy on the tokens it implies. During training every input is the target's
 real feature. At inference only the first one is. After that, the draft feeds on its own
 predictions, so EAGLE adds a little noise to the training features to make it tolerate small errors.
@@ -78,13 +82,13 @@ Its **confidence** in a token turns out to be a good estimate of how likely the 
 So give every node a **value**: the product of the draft's confidences along its path from the
 root, an estimate of the chance that the whole path gets accepted. Since only one path can be
 accepted, the expected number of accepted tokens is just the sum of the values of all the nodes in the tree.
-Choosing a tree of <M t="m" /> nodes to maximise that sum means keeping the <M t="m" /> highest-value
+Choosing a tree of $m$ nodes to maximise that sum means keeping the $m$ highest-value
 nodes. EAGLE-2 builds the tree in two phases:
 
-1. **Expand.** At each depth, run the draft on the <M t="k" /> highest-value nodes of that depth and take
-   each one's top <M t="k" /> tokens as children. A draft pass for a whole layer of the tree is one
+1. **Expand.** At each depth, run the draft on the $k$ highest-value nodes of that depth and take
+   each one's top $k$ tokens as children. A draft pass for a whole layer of the tree is one
    batched call, so depth costs one small forward pass per level.
-2. **Rerank.** Out of everything drafted, keep the <M t="m" /> nodes with the highest value. A child's
+2. **Rerank.** Out of everything drafted, keep the $m$ nodes with the highest value. A child's
    value can never exceed its parent's, so the kept nodes always form a connected tree.
 
 The draft model's weights are exactly EAGLE's. Nothing is retrained; only the tree changes.
@@ -115,14 +119,16 @@ needs to get right is the next token.
 So EAGLE-3 drops the feature loss and trains on tokens alone. That frees the draft to
 use more information, too. The top layer is specialised for predicting just the next token, but a
 draft guessing several tokens ahead benefits from the lower layers. EAGLE-3 takes hidden states
-from a low, a middle and a high layer of the target, <M t="l" />, <M t="m" /> and <M t="h" />, each of width <M t="k" />,
+from a low, a middle and a high layer of the target, $l$, $m$ and $h$, each of width $k$,
 and fuses them with one linear layer:
 
-<M block t="g = W_{\mathrm{fuse}}\,[\,l\,;\,m\,;\,h\,], \qquad W_{\mathrm{fuse}} \in \mathbb{R}^{k \times 3k}" />
+$$
+g = W_{\mathrm{fuse}}\,[\,l\,;\,m\,;\,h\,], \qquad W_{\mathrm{fuse}} \in \mathbb{R}^{k \times 3k}
+$$
 
-That creates a new problem. The draft's output <M t="a" /> is no longer meant to look like a target
-feature. At the first draft step the input is a real fused feature <M t="g" />. At the second, it's
-the draft's own <M t="a" /> from the step before, a kind of vector it was never trained on. EAGLE got away
+That creates a new problem. The draft's output $a$ is no longer meant to look like a target
+feature. At the first draft step the input is a real fused feature $g$. At the second, it's
+the draft's own $a$ from the step before, a kind of vector it was never trained on. EAGLE got away
 with this because its outputs were trained to resemble real features. EAGLE-3 can't.
 
 The fix is **training-time test**: run the multi-step drafting during training, so the draft learns

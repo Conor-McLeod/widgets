@@ -2,7 +2,7 @@
 import { getCollection, render } from 'astro:content';
 import Base from '~/layouts/Base.astro';
 import Widget from '~/components/Widget.astro';
-import M from '~/components/M.astro';
+import 'katex/dist/katex.min.css';
 
 export async function getStaticPaths() {
   const entries = await getCollection('explorations');
@@ -23,8 +23,8 @@ const fmt = new Intl.DateTimeFormat('en', { year: 'numeric', month: 'long', day:
         {entry.data.tags.map((t) => <a class="tag" href={`/?tags=${encodeURIComponent(t)}`}>{t}</a>)}
       </p>
     </header>
-    {/* Widget and M are injected so MDX files can use them without importing. */}
-    <Content components={{ Widget, M }} />
+    {/* Widget is injected so MDX files can use it without importing. */}
+    <Content components={{ Widget }} />
   </article>
 </Base>
 

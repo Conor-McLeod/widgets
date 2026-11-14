@@ -1,4 +1,4 @@
-// KaTeX for everything that shows maths, in prose (via <M>) and in widgets.
+// KaTeX for maths in widgets. (Prose maths in MDX is `$...$` / `$$`, rendered by rehype-katex.)
 // Importing this module also pulls in KaTeX's stylesheet and fonts, so a widget that uses it
 // stays self-contained.
 import katex from 'katex';

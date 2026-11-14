@@ -20,16 +20,18 @@ becomes a built-in draft model for speculative decoding, with nothing extra to t
 ## The architecture
 
 DeepSeek-V3's version is the one most others follow. The main model runs as usual and produces a
-hidden state <M t="h^0_i" /> at each position <M t="i" />, which the output head turns into a guess for
-token <M t="t_{i+1}" />. An MTP module then takes that hidden state, together with the embedding of the
+hidden state $h^0_i$ at each position $i$, which the output head turns into a guess for
+token $t_{i+1}$. An MTP module then takes that hidden state, together with the embedding of the
 **true** next token, and runs one extra transformer block:
 
-<M block t="\begin{aligned} h'^{k}_i &= M_k \begin{bmatrix} \mathrm{RMSNorm}(h^{k-1}_i) \\ \mathrm{RMSNorm}(\mathrm{Emb}(t_{i+k})) \end{bmatrix} \\ h^k_i &= \mathrm{TRM}_k(h'^{k}_i) \\ P^k_{i+k+1} &= \mathrm{OutHead}(h^k_i) \end{aligned}" />
+$$
+\begin{aligned} h'^{k}_i &= M_k \begin{bmatrix} \mathrm{RMSNorm}(h^{k-1}_i) \\ \mathrm{RMSNorm}(\mathrm{Emb}(t_{i+k})) \end{bmatrix} \\ h^k_i &= \mathrm{TRM}_k(h'^{k}_i) \\ P^k_{i+k+1} &= \mathrm{OutHead}(h^k_i) \end{aligned}
+$$
 
-The projection <M t="M_k" /> squashes the two concatenated vectors back to model width. The embedding
+The projection $M_k$ squashes the two concatenated vectors back to model width. The embedding
 table and output head are shared with the main model, so a module costs one transformer block plus
 that projection. In DeepSeek-V3 that's about 14B parameters on top of the 671B main model.
-Module <M t="k" /> feeds module <M t="k+1" />, so each prediction is still made one token at a time, with
+Module $k$ feeds module $k+1$, so each prediction is still made one token at a time, with
 every earlier token in hand.
 
 <Widget src="chain" height={560} caption="Who predicts what in one training sequence. Each cell shows its target; chips show the true token a module is given." />
@@ -48,13 +50,15 @@ drafts more accurate.
 
 ### Why train with it?
 
-The training loss adds the modules' cross-entropy losses, scaled by a weight <M t="\lambda" />:
+The training loss adds the modules' cross-entropy losses, scaled by a weight $\lambda$:
 
-<M block t="\mathcal{L} = \mathcal{L}_{\text{main}} + \frac{\lambda}{D} \sum_{k=1}^{D} \mathcal{L}_k" />
+$$
+\mathcal{L} = \mathcal{L}_{\text{main}} + \frac{\lambda}{D} \sum_{k=1}^{D} \mathcal{L}_k
+$$
 
-DeepSeek-V3 used <M t="D = 1" /> and <M t="\lambda = 0.3" /> for the first 10T tokens, then 0.1 for the remaining
+DeepSeek-V3 used $D = 1$ and $\lambda = 0.3$ for the first 10T tokens, then 0.1 for the remaining
 4.8T. The counter under the widget shows the obvious effect: each sequence grades more predictions.
-The less obvious one is that the gradients from the modules flow back into <M t="h^0" />. The main model's
+The less obvious one is that the gradients from the modules flow back into $h^0$. The main model's
 hidden state is pushed to carry information about the token after next as well as the next one, a
 mild form of planning ahead. DeepSeek's ablations found this improved benchmark scores even with the
 module thrown away afterwards.
@@ -80,25 +84,27 @@ the same.
 
 <Widget src="decode" height={520} caption="Greedy self-speculative decoding on a toy text. Acceptance is simulated with the probabilities set below." />
 
-Start with <M t="k = 1" />, which is how DeepSeek-V3 is deployed, and press **+200** a few times. Tokens per
-pass settles near <M t="1 + a" />. DeepSeek reports that its MTP module's draft is accepted 85–90% of the
-time, which gives the 1.8× generation speedup they quote. Set <M t="k = 0" /> to see plain decoding: one
+Start with $k = 1$, which is how DeepSeek-V3 is deployed, and press **+200** a few times. Tokens per
+pass settles near $1 + a$. DeepSeek reports that its MTP module's draft is accepted 85–90% of the
+time, which gives the 1.8× generation speedup they quote. Set $k = 0$ to see plain decoding: one
 token per pass, no matter what.
 
 Inference engines such as vLLM and SGLang let you chain the module to draft several tokens per pass.
 The module was only trained to look one step ahead, though, so from the second draft on it is
-working from its own output, and accuracy falls with each step. The decay <M t="r" /> models that. Push
-<M t="k" /> to 4 and watch how often a pass ends on a rejection, with the drafts after it thrown out
+working from its own output, and accuracy falls with each step. The decay $r$ models that. Push
+$k$ to 4 and watch how often a pass ends on a rejection, with the drafts after it thrown out
 unused.
 
 ## How deep should you draft?
 
 Each draft isn't free. The MTP module has to run once per draft, one after another, and verifying
-more positions adds a little work to the main pass. If draft <M t="j" /> is accepted with probability
-<M t="a\,r^{\,j-1}" /> given that everything before it was, the expected tokens per pass and the speedup
+more positions adds a little work to the main pass. If draft $j$ is accepted with probability
+$a\,r^{\,j-1}$ given that everything before it was, the expected tokens per pass and the speedup
 are
 
-<M block t="E(k) = 1 + \sum_{j=1}^{k} \prod_{m=1}^{j} a\, r^{\,m-1}, \qquad \text{speedup}(k) = \frac{E(k)}{1 + k\,(c_{\text{draft}} + c_{\text{verify}})}" />
+$$
+E(k) = 1 + \sum_{j=1}^{k} \prod_{m=1}^{j} a\, r^{\,m-1}, \qquad \text{speedup}(k) = \frac{E(k)}{1 + k\,(c_{\text{draft}} + c_{\text{verify}})}
+$$
 
 with both costs measured as a fraction of one plain decoding step.
 
@@ -107,8 +113,8 @@ with both costs measured as a fraction of one plain decoding step.
 With the defaults, roughly DeepSeek-V3's acceptance rate and a module that costs a few percent of
 the 61-layer main model, the best depth is a few drafts and the curve is flat near the top. Each
 extra draft adds less than the one before because it only counts if every earlier draft landed.
-Drag <M t="r" /> to 1 and deeper drafting keeps paying for longer. Raise the verify cost, as happens at
-large batch sizes when the GPU is no longer waiting on memory, and the best <M t="k" /> drops to 1 or even 0.
+Drag $r$ to 1 and deeper drafting keeps paying for longer. Raise the verify cost, as happens at
+large batch sizes when the GPU is no longer waiting on memory, and the best $k$ drops to 1 or even 0.
 That's why speculation helps most in latency-bound, small-batch serving, and why MTP layers are an
 option you can switch on rather than always running.
 

@@ -21,9 +21,11 @@ abstraction covers all three of the jobs above.
 ## A layout is a function
 
 A CuTe layout is a pair of tuples, a **shape** and a **stride**, written `shape:stride`. It maps a
-coordinate to an offset: multiply each coordinate by its stride and add. For a rank-2 layout <M t="(M, N):(d_0, d_1)" />,
+coordinate to an offset: multiply each coordinate by its stride and add. For a rank-2 layout $(M, N):(d_0, d_1)$,
 
-<M block t="(i, j) \mapsto i\,d_0 + j\,d_1" />
+$$
+(i, j) \mapsto i\,d_0 + j\,d_1
+$$
 
 That's all a column-major or row-major matrix ever was. `(4,8):(1,4)` is a 4×8 column-major matrix:
 moving down a row adds 1, moving right a column adds 4. `(4,8):(8,1)` is the same 4×8 matrix stored
@@ -35,15 +37,15 @@ A few things to notice:
 
 - **Padded** `(4,8):(1,5)` leaves one unused slot after every column. That's the leading dimension in BLAS. The layout
   covers it with no extra concept.
-- **Broadcast** `(4,8):(0,1)` has stride 0, so every row maps to the same 8 offsets. A size-<M t="M" /> view of one
+- **Broadcast** `(4,8):(0,1)` has stride 0, so every row maps to the same 8 offsets. A size-$M$ view of one
   row costs nothing.
-- **2×2 blocks** has **nested** modes: the row mode is itself `(2,2):(1,4)`. A row index <M t="i" /> is split
-  into <M t="(i \bmod 2, \lfloor i/2 \rfloor)" />, and each piece gets its own stride. The grid is still
+- **2×2 blocks** has **nested** modes: the row mode is itself `(2,2):(1,4)`. A row index $i$ is split
+  into $(i \bmod 2, \lfloor i/2 \rfloor)$, and each piece gets its own stride. The grid is still
   4×8 to whoever indexes it, but in memory it's stored as 2×2 blocks of 4 contiguous elements.
   CUDA has no word for this. In CuTe it's just another layout.
 
 Every coordinate can also be given as a single integer. CuTe counts through the shape with the
-leftmost mode fastest (column-major order), so element 5 of a 4×8 layout is <M t="(1, 1)" />. That's
+leftmost mode fastest (column-major order), so element 5 of a 4×8 layout is $(1, 1)$. That's
 the "1-D index" in the readout. It's why a layout can be **composed**: the output offset of one layout can be
 fed into another as its 1-D input.
 
@@ -63,16 +65,18 @@ seen through a different function.
 Read the divided layout for the `(2,4)` tiler: `((2,4),(4,4)):((16,1),(32,4))`. The tile mode `(2,4):(16,1)`
 has the original strides, because moving inside a tile is moving in the original matrix. The rest mode
 `(4,4):(32,4)` steps by whole tiles: 2 rows down is 32 elements, 4 columns across is 4. Slicing with
-`None` keeps a mode, so `gA[(None, b)]` is tile <M t="b" /> as a `(2,4)` tensor of its own. In a kernel,
-<M t="b" /> is the block index.
+`None` keeps a mode, so `gA[(None, b)]` is tile $b$ as a `(2,4)` tensor of its own. In a kernel,
+$b$ is the block index.
 
 ## Who holds what: thread-value layouts
 
 Inside the tile, the work is split across threads. CuTe describes the split with another layout, a
-**TV layout**. It maps a `(thread, value)` pair to a coordinate in the tile: thread <M t="t" />'s
-<M t="v" />-th element is at `tv(t, v)`. **Composing** the tile's layout with it,
+**TV layout**. It maps a `(thread, value)` pair to a coordinate in the tile: thread $t$'s
+$v$-th element is at `tv(t, v)`. **Composing** the tile's layout with it,
 
-<M block t="\text{tile} \circ \text{tv} : (t, v) \mapsto \text{coordinate} \mapsto \text{address}" />
+$$
+\text{tile} \circ \text{tv} : (t, v) \mapsto \text{coordinate} \mapsto \text{address}
+$$
 
 gives each thread its own view of exactly the elements it owns. Then `thr = tidfrg[(tidx, None)]` slices
 out one thread's values.
@@ -90,8 +94,8 @@ sectors each one touches.
 - **Vectorised** `((2,4),4):((16,1),4)`: each thread's 4 values are adjacent in memory, so one 16-byte vector load
   fetches them, and the threads together cover the tile in a single instruction.
 
-The thread mode of the vectorised layout is nested, `(2,4):(16,1)`. Thread <M t="t" /> is split into
-<M t="(t \bmod 2, \lfloor t/2 \rfloor)" />: the first part picks the left or right half of a row (16 is 4
+The thread mode of the vectorised layout is nested, `(2,4):(16,1)`. Thread $t$ is split into
+$(t \bmod 2, \lfloor t/2 \rfloor)$: the first part picks the left or right half of a row (16 is 4
 columns in column-major coordinates), the second picks the row. Real kernels use 128 or more threads, with the
 same structure.
 
@@ -154,7 +158,7 @@ Some things to notice:
 ## What's built on this
 
 The rest of CuTe uses the same pieces. A `TiledMMA` is a TV layout for a Tensor Core instruction. It records
-which thread holds which elements of the <M t="A" />, <M t="B" /> and <M t="C" /> fragments (see the
+which thread holds which elements of the $A$, $B$ and $C$ fragments (see the
 [Tensor Core exploration](/tensor-core) for what that instruction does). A `TiledCopy` pairs a TV layout with
 a copy instruction, such as a vector load, an asynchronous copy into shared memory, or a TMA bulk transfer.
 **Swizzles** are layouts too. They permute shared-memory addresses with an XOR so that the threads of a warp hit
