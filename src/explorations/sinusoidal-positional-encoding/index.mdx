@@ -13,23 +13,43 @@ look like the same bag of words.
 
 The original Transformer ([Vaswani et al., 2017](https://arxiv.org/abs/1706.03762)) fixed this by adding a
 **positional encoding** to each token embedding before the first layer. It's a vector of
-size $d_{\text{model}}$ that depends only on the position $p$. Nothing about it is learned. It's built from sines and cosines:
+size $d_{\text{model}}$ that depends only on the position $p$ of a token in the input sequence. Nothing about it is learned. It's built from sines and cosines:
 
+These formulas define the values of the $2i$-th and $(2i + 1)$-th dimensions of the positional embedding for token $p$ in the input sequence: 
 $$
 \operatorname{PE}(p)_{2i} = \sin(p\,\omega_i), \qquad \operatorname{PE}(p)_{2i+1} = \cos(p\,\omega_i), \qquad \omega_i = \frac{1}{10000^{2i/d_{\text{model}}}}
 $$
+
+where:
+$$
+i = 0, 1, \dots, \frac{d_{\text{model}}}{2} - 1.   
+$$
+
+$i$ is the "dimension-pair index" --- it indexes every pair of consecutive dimensions in the positional embedding up until the final pair, $d_{\text{model}} - 2$ and $d_{\text{model}} - 1$. To be explicit:
+- $i=0$ covers dimensions $2i = 0$ and $2i + 1 = 1$
+- $i=1$ covers dimensions $2i = 2$ and $2i + 1 = 3$
+- $i=\frac{d_{\text{model}}}{2} - 1$ covers dimensions $2i = d_{\text{model}} - 2$ and $2i + 1 = d_{\text{model}} - 1$
+
+$d_{\text{model}}$ is assumed to always be even so that there is never a $\operatorname{PE}(p)_{2i}$ without a $\operatorname{PE}(p)_{2i+1}$.
+
+Now let's predict what will happen as we vary $i$ and $p$. 
+- At $i=0$, $\omega_0 = 1$
+- At $i=1$, 
 
 That looks arbitrary at first. Why sines, why pairs, and why 10000? The widgets below answer these one at a time.
 
 ## A bank of clocks
 
-Take the dimensions two at a time. Pair $i$ is $(\sin p\,\omega_i,\ \cos p\,\omega_i)$, which is a point on the unit
-circle at angle $p\,\omega_i$. So you can think of each pair as a clock hand. Every step forward in position turns
-hand $i$ by $\omega_i$ radians, and it comes back round every $\lambda_i = 2\pi / \omega_i$ positions.
+Take the dimensions two at a time. Pair $i$ holds $\sin p\,\omega_i$ and $\cos p\,\omega_i$. Write them cosine first,
+$(\cos p\,\omega_i,\ \sin p\,\omega_i)$, and that's a point on the unit circle at angle $p\,\omega_i$, measured
+anticlockwise from the $x$-axis as usual. The paper puts the sine first, but which coordinate you list first is just
+a labelling choice and changes nothing below. So you can think of each pair as a clock hand, one that starts at
+3 o'clock and turns anticlockwise. Every step forward in position turns hand $i$ by $\omega_i$ radians, and it comes
+back round every $\lambda_i = 2\pi / \omega_i$ positions.
 
 The frequencies fall off geometrically, so pair 0 spins once every 6.3 positions and the last pair takes
 thousands of positions to make one turn. Below is a tiny $d_{\text{model}} = 16$ encoding, with 8 hands.
-The numbers under each dial are the two entries of the vector that the hand stands for.
+The numbers under each dial are the hand's coordinates, cosine first: the two entries of the vector that the hand stands for.
 
 - Press **play** and watch the hands. It works like an odometer, or the bits of a binary counter. The fast
   hands tell nearby positions apart, and the slow hands tell you roughly where you are. No two positions put all eight hands in the same place.
@@ -47,7 +67,7 @@ forward turns hand $i$ by $k\,\omega_i$, wherever you start.
 That's the property the paper was after. For each pair, moving by $k$ is a fixed rotation:
 
 $$
-\begin{pmatrix} \sin (p+k)\omega_i \\ \cos (p+k)\omega_i \end{pmatrix} = \begin{pmatrix} \cos k\omega_i & \sin k\omega_i \\ -\sin k\omega_i & \cos k\omega_i \end{pmatrix} \begin{pmatrix} \sin p\,\omega_i \\ \cos p\,\omega_i \end{pmatrix}
+\begin{pmatrix} \cos (p+k)\omega_i \\ \sin (p+k)\omega_i \end{pmatrix} = \begin{pmatrix} \cos k\omega_i & -\sin k\omega_i \\ \sin k\omega_i & \cos k\omega_i \end{pmatrix} \begin{pmatrix} \cos p\,\omega_i \\ \sin p\,\omega_i \end{pmatrix}
 $$
 
 The matrix depends on $k$ but not on $p$. Stack those 2×2 blocks down the diagonal, and
