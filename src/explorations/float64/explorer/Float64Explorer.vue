@@ -38,16 +38,46 @@ const ulp = computed(() => {
   return Math.abs(fromBits(toBits(Math.abs(v)) + 1n) - Math.abs(v));
 });
 
-const cells = computed(() =>
-  Array.from({ length: 64 }, (_, i) => {
-    const pos = 63 - i;
-    return {
-      pos,
-      on: ((bits.value >> BigInt(pos)) & 1n) === 1n,
-      field: pos === 63 ? 'sign' : pos >= 52 ? 'exp' : 'mant',
-    };
-  }),
+// The three fields, most significant first; `hi`/`lo` are inclusive bit positions.
+const FIELDS = [
+  { key: 'sign', label: 'sign', hi: 63, lo: 63 },
+  { key: 'exp', label: 'exponent · 11 bits', hi: 62, lo: 52 },
+  { key: 'mant', label: 'mantissa · 52 bits', hi: 51, lo: 0 },
+] as const;
+
+const groups = computed(() =>
+  FIELDS.map((f) => ({
+    ...f,
+    cells: Array.from({ length: f.hi - f.lo + 1 }, (_, i) => {
+      const pos = f.hi - i;
+      return { pos, on: ((bits.value >> BigInt(pos)) & 1n) === 1n };
+    }),
+  })),
 );
+
+// Hover/focus tooltip: which bit, and which power of two it stands for.
+const fieldsEl = ref<HTMLElement | null>(null);
+const tip = ref<{ pos: number; style: Record<string, string> } | null>(null);
+
+function showTip(pos: number, e: Event) {
+  const btn = e.currentTarget as HTMLElement;
+  const box = fieldsEl.value;
+  if (!box) return;
+  const style: Record<string, string> = { bottom: `${box.offsetHeight - btn.offsetTop + 4}px` };
+  // Anchor to whichever side keeps the tooltip inside the widget.
+  if (btn.offsetLeft + btn.offsetWidth / 2 < box.offsetWidth / 2) style.left = `${btn.offsetLeft}px`;
+  else style.right = `${box.offsetWidth - btn.offsetLeft - btn.offsetWidth}px`;
+  tip.value = { pos, style };
+}
+
+const tipText = computed(() => {
+  if (!tip.value) return '';
+  const pos = tip.value.pos;
+  if (pos === 63) return 'bit 63 · sign: $0$ is positive, $1$ is negative';
+  const k = pos - 52;
+  if (pos >= 52) return `bit ${pos} · adds $2^{${k}} = ${2 ** k}$ to the exponent field`;
+  return `bit ${pos} · $2^{${k}}$ of the mantissa`;
+});
 
 function flip(pos: number) {
   bits.value ^= 1n << BigInt(pos);
@@ -81,21 +111,26 @@ const exact = computed(() => {
       <button @click="step(1n)" title="Next representable float">+1 ulp</button>
     </label>
 
-    <div class="bits" role="group" aria-label="64 bits, click to flip">
-      <button
-        v-for="c in cells"
-        :key="c.pos"
-        :class="[c.field, { on: c.on }]"
-        :title="`bit ${c.pos}`"
-        @click="flip(c.pos)"
-      >
-        {{ c.on ? 1 : 0 }}
-      </button>
-    </div>
-    <div class="legend">
-      <span class="sign">sign</span>
-      <span class="exp">exponent · 11 bits</span>
-      <span class="mant">mantissa · 52 bits</span>
+    <div class="fields" ref="fieldsEl">
+      <div v-for="g in groups" :key="g.key" :class="['field', g.key]">
+        <div class="field-label">{{ g.label }}</div>
+        <div class="bits" role="group" :aria-label="`${g.label}, click a bit to flip it`">
+          <button
+            v-for="c in g.cells"
+            :key="c.pos"
+            :class="{ on: c.on }"
+            :aria-label="`bit ${c.pos}`"
+            @click="flip(c.pos)"
+            @mouseenter="showTip(c.pos, $event)"
+            @focus="showTip(c.pos, $event)"
+            @mouseleave="tip = null"
+            @blur="tip = null"
+          >
+            {{ c.on ? 1 : 0 }}
+          </button>
+        </div>
+      </div>
+      <div v-if="tip" class="tip" :style="tip.style"><Tex :text="tipText" /></div>
     </div>
 
     <p class="formula">
@@ -157,14 +192,54 @@ button {
   padding: 0.3rem 0.6rem;
   cursor: pointer;
 }
+.fields {
+  --cell: 1.35rem;
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+}
+.tip {
+  position: absolute;
+  z-index: 1;
+  max-width: min(18rem, 100%);
+  width: max-content;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+  pointer-events: none;
+}
+.field-label {
+  margin-bottom: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--c);
+  white-space: nowrap;
+}
 .bits {
   display: grid;
-  grid-template-columns: repeat(32, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--cols), minmax(0, var(--cell)));
   gap: 2px;
 }
+.sign .bits {
+  --cols: 1;
+}
+.exp .bits {
+  --cols: 11;
+}
+/* The mantissa always gets its own row, in two lines of 26 (four of 13 on phones). */
+.mant {
+  flex-basis: 100%;
+}
+.mant .bits {
+  --cols: 26;
+}
 @media (max-width: 560px) {
-  .bits {
-    grid-template-columns: repeat(16, minmax(0, 1fr));
+  .mant .bits {
+    --cols: 13;
   }
 }
 .bits button {
@@ -193,15 +268,6 @@ button {
 }
 .bits button.on {
   background: color-mix(in srgb, var(--c) 45%, transparent);
-}
-.legend {
-  display: flex;
-  gap: 1rem;
-  margin-top: 0.4rem;
-  font-size: 0.78rem;
-}
-.legend span {
-  color: var(--c);
 }
 .formula {
   margin: 1rem 0 0.5rem;
