@@ -6,7 +6,7 @@ import { BAND, C_MAX, GEARS, STALL_RPM, Sim, rpm, type Inputs } from './sim';
 const DT = 0.001;
 const HISTORY_S = 8;
 const SAMPLE_HZ = 30;
-const H = 320;
+const H = 232; // top canvas: road + clutch schematic
 const PEDAL_TRAVEL = 118; // px the pad moves in a 140px track
 
 type PedalKey = 'clutch' | 'brake' | 'throttle';
@@ -26,7 +26,9 @@ const pedalHtml = (k: PedalKey, label: string) => `
 export const mount: Mount = (el) => {
   el.innerHTML = `
     <div class="cl">
-      <canvas class="cl-canvas" role="img" aria-label="Car, clutch schematic and speed trace"></canvas>
+      <canvas class="cl-canvas" role="img" aria-label="Car and clutch schematic"></canvas>
+      <div class="cl-body">
+      <div class="cl-plot"><canvas class="cl-chart" role="img" aria-label="Engine and gearbox speed trace"></canvas></div>
       <div class="cl-ctl">
         <div class="cl-pedals">
           ${pedalHtml('clutch', 'Clutch')}${pedalHtml('brake', 'Brake')}${pedalHtml('throttle', 'Gas')}
@@ -43,11 +45,16 @@ export const mount: Mount = (el) => {
           <label class="cl-range"><span>Bite point</span><input class="cl-bitepos" type="range" min="0" max="100" value="40" /><output></output></label>
         </div>
       </div>
+      </div>
       <p class="cl-msg" aria-live="polite"></p>
     </div>
     <style>
       .cl-canvas { display: block; width: 100%; height: ${H}px; }
-      .cl-ctl { display: flex; flex-wrap: wrap; gap: 1rem 1.5rem; margin-top: .75rem; }
+      .cl-body { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 1.5rem; margin-top: .75rem; }
+      .cl-plot { position: relative; min-height: 240px; min-width: 0; }
+      .cl-chart { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+      .cl-ctl { display: flex; flex-wrap: wrap; gap: 1rem 1.5rem; min-width: 0; }
+      @media (max-width: 560px) { .cl-body { grid-template-columns: 1fr; } }
       .cl-pedals { display: flex; gap: .6rem; }
       .cl-pedal { display: flex; flex-direction: column; align-items: center; gap: .2rem; width: 58px; touch-action: none; cursor: ns-resize; outline: none; user-select: none; }
       .cl-track { position: relative; width: 100%; height: 140px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
@@ -75,6 +82,8 @@ export const mount: Mount = (el) => {
 
   const canvas = el.querySelector<HTMLCanvasElement>('.cl-canvas')!;
   const ctx = canvas.getContext('2d')!;
+  const chart = el.querySelector<HTMLCanvasElement>('.cl-chart')!;
+  const cctx = chart.getContext('2d')!;
   const msg = el.querySelector<HTMLElement>('.cl-msg')!;
   const gearBtns = [...el.querySelectorAll<HTMLButtonElement>('.cl-gears button')];
   const hbBtn = el.querySelector<HTMLButtonElement>('.cl-hb')!;
@@ -187,12 +196,19 @@ export const mount: Mount = (el) => {
     for (const k of ['text', 'muted', 'border', 'surface', 'bg', 'accent', 'accent-soft', 'danger', 'mono'])
       colors[k] = cs.getPropertyValue(`--${k}`).trim();
   }
+  let CW = 300;
+  let CH = 240;
   function resize() {
     const dpr = window.devicePixelRatio || 1;
     W = canvas.clientWidth || 600;
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    CW = chart.clientWidth || 300;
+    CH = chart.clientHeight || 240;
+    chart.width = Math.round(CW * dpr);
+    chart.height = Math.round(CH * dpr);
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   const N = HISTORY_S * SAMPLE_HZ;
@@ -341,7 +357,8 @@ export const mount: Mount = (el) => {
     ctx.fillText(`carrying ${Math.abs(sim.torque).toFixed(0)} of ${sim.cap.toFixed(0)} Nm`, X(520), mid - 38);
   }
 
-  function drawChart(y0: number, h: number) {
+  // Takes its own context and width (shadowing the top canvas's) since the chart has its own canvas.
+  function drawChart(ctx: CanvasRenderingContext2D, W: number, y0: number, h: number) {
     const c = colors;
     const left = 36;
     const right = W - 4;
@@ -407,7 +424,8 @@ export const mount: Mount = (el) => {
     ctx.clearRect(0, 0, W, H);
     drawRoad();
     drawClutch(128);
-    drawChart(236, 80);
+    cctx.clearRect(0, 0, CW, CH);
+    drawChart(cctx, CW, 6, CH - 10);
   }
 
   // --- loop ----------------------------------------------------------------------------------
@@ -450,6 +468,7 @@ export const mount: Mount = (el) => {
   resize();
   io.observe(el);
   ro.observe(canvas);
+  ro.observe(chart);
 
   return () => {
     cancelAnimationFrame(raf);
