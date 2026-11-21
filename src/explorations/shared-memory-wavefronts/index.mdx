@@ -1,0 +1,112 @@
+---
+title: Shared-memory wavefronts
+summary: How a warp's shared-memory load gets cut into 128-byte passes called wavefronts, and why the number of passes, not the number of bytes, is what a kernel pays for.
+date: 2026-11-05
+tags: [gpu, hardware, kernels]
+draft: true
+---
+
+Profile a kernel in Nsight Compute and the shared-memory table has two columns that look like they should be the
+same thing: **requests** and **wavefronts**. A request is one shared-memory instruction issued by one warp. A wavefront
+is one pass of that request through the shared-memory pipeline. When the two numbers match, every load went through in
+one pass. When wavefronts outnumber requests, some loads took several passes, and that gap is what people mean by
+**bank conflicts**. This page is about where the extra passes come from.
+
+## Banks, and what one pass can do
+
+Shared memory on every NVIDIA GPU since Maxwell is split into 32 **banks**, each 4 bytes wide. Consecutive 4-byte words
+go to consecutive banks, so the word at byte address $a$ lives in bank
+
+$$
+\text{bank}(a) = \left\lfloor a / 4 \right\rfloor \bmod 32.
+$$
+
+Each bank can deliver one word per pass. A wavefront is therefore at most 32 words, one from each bank: 128 bytes,
+which is the shared-memory bandwidth of an SM per clock. Two rules decide how many wavefronts a warp's request needs:
+
+- **Different words in the same bank must go in different wavefronts.** If bank 0 is asked for 4 different words, that request takes at least 4 passes.
+- **The same word goes to everyone who wants it.** Any number of threads reading one word costs one slot in one wavefront. This is a *broadcast*, and it isn't a conflict.
+
+So for 32-bit loads the count is simple: look at each bank, count the *distinct* words it has to supply, and take the largest.
+
+Below, the top row is the 32 threads of one warp, and each one reads one element. (NVIDIA calls a thread's position in its warp
+its *lane*, so you'll see "lane" in PTX and profiler output.) The wires show which bank each thread's address falls in. Under them, every cell is a 4-byte word the warp touches, placed in its bank's column and labelled
+with the thread that wants it ($\times n$ means a broadcast to $n$ threads). Wires that land in the same column
+are threads competing for one bank. **Where the words live** stacks them by the
+128-byte row of memory they're in. **When they're delivered** stacks them by wavefront. Flip between the two: every word slides down its
+bank's column into the first pass that bank is free, and red marks the words that had to wait.
+
+<Widget src="request" height={440} caption="Hover a thread to find its words, or a word to find its threads. Columns are banks; the faint lines group banks in fours (16 bytes)." />
+
+Things to try:
+
+- **Consecutive** with 32-bit loads is the ideal case: one row, one wavefront, all 32 banks busy.
+- **Column of 32×32** is stride 32: every wire converges on bank 0. Flip to wavefronts and the column of 32 words becomes 32 passes, each moving 4 useful bytes out of a possible 128.
+- **Padded column** is stride 33. One extra float per row shifts each row by one bank, so the same 32 words now sit on a diagonal and go in a single pass.
+- **Broadcast** has every thread reading element 0. One cell, one wavefront, no conflict, however many threads share it.
+- **Random** reads two rows' worth of memory at random. Some banks get the same word twice (broadcast, free), some get two different words (a conflict). Only the second kind adds a wavefront.
+
+## Wider loads are split before banks are checked
+
+Kernels often load more than 4 bytes per thread at once. CUDA's built-in vector types make that easy: `float2` is a struct of
+two floats (`.x`, `.y`) aligned to 8 bytes, and `float4` is four floats (`.x` to `.w`) aligned to 16, with matching `int2`,
+`int4`, `half2` and so on. Because they're aligned, the compiler loads each one with a single 64-bit or 128-bit instruction
+(`LDS.64`, `LDS.128` in the SASS) instead of two or four 32-bit ones. A `double` is also a 64-bit load.
+
+A 64-bit load asks for 256 bytes per warp, and a 128-bit load for 512. That can't fit
+in one 128-byte wavefront no matter where the data is, so the hardware first splits the warp into **phases**: half-warps of 16 threads for
+64-bit, quarter-warps of 8 threads for 128-bit. Each phase is exactly 128 bytes. Banks are then checked phase by phase, and the request costs
+the sum over phases.
+
+That makes the ideal 2 or 4 wavefronts rather than 1. It's not a penalty: a 128-bit load with 4 wavefronts moves 512 bytes in 4 clocks, the
+same rate as four conflict-free 32-bit loads but with a quarter of the instructions. It's the reason vectorised shared-memory access is
+usually worth it. Pick **64-bit** or **128-bit** above and the thread row shades the phases; with **Consecutive** each phase fills one row and
+the summary shows no extra wavefronts.
+
+This phase model comes from older versions of the CUDA programming guide. It still predicts real hardware well, but recent architectures are
+smarter in some corner cases (for example when threads in different phases read the same address), so the profiler's measured count is the
+final word.
+
+## Which strides conflict
+
+Strided access is the common case: thread $t$ reads element $s \cdot t$ of a row-major array, so $s$ is the row
+length when a warp walks down a column. For 32-bit elements, thread $t$ hits bank $s t \bmod 32$. Those 32 banks are all
+different exactly when $s$ is odd, and in general each bank gets $\gcd(s, 32)$ different words:
+
+$$
+\text{wavefronts}_{32}(s) = \gcd(s, 32).
+$$
+
+The chart runs the model for every stride from 0 to 64. Blue is the unavoidable wavefronts (one per phase), red is the conflicts on top.
+
+<Widget src="stride" height={380} caption="Wavefronts for one warp-wide load where thread $t$ reads element $s\,t$. Stride 0 is a broadcast." />
+
+Things to notice:
+
+- **Every odd stride is free, at every width.** This is why padding a 32-float row to 33 works, and why padding a tile of `float4` by one `float4` works too.
+- **Powers of two are the worst.** Stride 32 costs 32 wavefronts for floats; stride 16 costs 16. A square tile with a power-of-two side, read down a column, is the textbook bad case, and the [transpose](https://developer.nvidia.com/blog/efficient-matrix-transpose-cuda-cc/) kernel is the textbook example of fixing it.
+- **The wider patterns are the narrow one, scaled.** 64-bit loads cost $2 \gcd(s, 16)$ and 128-bit loads $4 \gcd(s, 8)$: within one phase there are only 16 or 8 threads, so a smaller power of two is enough to wrap around the banks.
+- **Stride 0 isn't a conflict.** Every thread hits bank 0, but with the same word, so the bar sits at the ideal.
+
+## Fixing conflicts without wasting memory
+
+Padding works, but it wastes a column per row and makes the tile an awkward size. The alternative is to permute where each element goes: store
+element $(r, c)$ of a tile at column $c \oplus r$ instead of $c$. Within a row that's still a permutation, so row reads stay in one
+wavefront. Down a column, $c$ is fixed and $r$ varies, so $c \oplus r$ visits every bank once. That's a swizzle, and the
+[swizzling in CUTLASS](/cutlass-swizzle) page works through the 16-byte version used by GEMM kernels.
+
+## Reading the profiler
+
+In Nsight Compute, the **Memory Workload Analysis** section reports shared-memory instructions, requests, wavefronts and bank conflicts. The raw
+counters behind them include `l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum` (wavefronts for loads) and
+`l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum`, with `_op_st` versions for stores. The **Source** page goes further and shows, per
+instruction, how many wavefronts were ideal and how many were excessive, which points straight at the line with the bad access pattern.
+
+Two things to keep in mind when reading them:
+
+- **Compare wavefronts against the ideal, not against requests.** A kernel full of `LDS.128` has 4 wavefronts per request and no conflicts.
+- **The bank-conflict counter can be nonzero for conflict-free code.** It can also count arbitration with other traffic in the same L1 data path, not just conflicts within one request. Excess wavefronts on a specific instruction are the more reliable signal.
+
+The word "wavefront" isn't specific to shared memory, either. The same L1TEX pipeline processes global and local memory requests in wavefronts,
+where the limit is how many 32-byte sectors or cache lines one pass can handle rather than banks. The idea is the same: one instruction, as many
+passes as the access pattern forces, and the passes are the cost.
