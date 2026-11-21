@@ -1,0 +1,151 @@
+---
+title: Softmax
+summary: How softmax turns a list of arbitrary scores into probabilities, and what temperature, shifting and overflow do to it.
+date: 2026-11-17
+tags: [machine-learning, numerics]
+draft: true
+---
+
+A classifier's last layer produces one number per class: the **logits**. They can be any real numbers, negative or
+positive, and they don't add up to anything in particular. What we usually want is a probability distribution: one
+non-negative number per class, summing to 1, with the biggest logit getting the biggest share. We also want it to be
+smooth, so that gradient descent can tell how nudging each logit would change the answer.
+
+The obvious ideas each fail one of those. Dividing each logit by the sum breaks as soon as a logit is negative, or the
+sum is 0. Picking the largest (argmax) gives a one-hot answer that doesn't budge when you nudge a logit, so its gradient
+is zero almost everywhere. **Softmax** makes every score positive by exponentiating it, then normalises:
+
+$$
+\operatorname{softmax}(z)_i = \frac{e^{z_i}}{\sum_j e^{z_j}}
+$$
+
+Every $e^{z_i}$ is positive, dividing by the total makes them sum to 1, and $e^x$ is increasing, so the order of the
+logits is kept.
+
+## Playing with the logits
+
+Below are five classes. Drag the logit bars and watch the probabilities. The table shows the step in between: each
+$e^{z_i}$, before it's divided by the sum. Ignore the temperature slider for now.
+
+<Widget src="logits" height={440} />
+
+Things to try:
+
+- Press **+ 1** a few times. Every logit goes up, and the probabilities don't move at all. Adding $c$ to every logit
+  multiplies every $e^{z_i}$ by the same $e^{c}$, and that factor cancels against the sum. Only the *differences*
+  between logits matter.
+- That's because the ratio of two probabilities is $p_i / p_j = e^{z_i - z_j}$, shown under the table. A gap of 1 in
+  the logits makes one class $e \approx 2.7$ times as likely as the other. A gap of $\ln 10 \approx 2.3$ makes it 10
+  times as likely, and a gap of 4.6 makes it 100 times as likely. Logits are log-odds, up to that shared constant.
+- Drag one logit well above the rest. Its probability heads towards 1 but never reaches it, and the losers keep a small
+  share. That's the "soft" in softmax: it's a smoothed-out version of argmax, which would put all of the mass on the
+  winner.
+- Press **× 2**. The gaps double, so every ratio gets squared, and the distribution gets peakier. **÷ 2** flattens it.
+
+## Temperature
+
+Scaling all the logits is common enough to have a name. Dividing them by a **temperature** $T$ before the softmax,
+
+$$
+p_i = \frac{e^{z_i / T}}{\sum_j e^{z_j / T}}
+$$
+
+stretches every gap by $1/T$. Move the slider in the widget above.
+
+- As $T \to 0$ the gaps blow up and softmax turns into argmax: the top class gets everything.
+- At $T = 1$ you get plain softmax.
+- As $T \to \infty$ the gaps shrink to nothing and every class gets $1/5$, the dashed line.
+
+Language models sample their next token from a softmax over the vocabulary, and the "temperature" setting in an LLM API
+is this $T$. Low temperatures make the model pick the likeliest token almost every time; high ones flatten the
+distribution and let unlikely tokens through.
+
+## Three classes, drawn
+
+With three classes we can draw the whole map. Since adding a constant to every logit changes nothing, three logits only
+have two degrees of freedom, so the left panel shows the logits as a plane. The three arrows point in the directions
+that raise $z_A$, $z_B$ and $z_C$. Moving perpendicular to the page, adding the same amount to all three, would do nothing,
+so there's no third axis.
+
+The right panel shows the probabilities. Three non-negative numbers summing to 1 live in a triangle (the **probability
+simplex**): each corner is one class with probability 1, the centre is $(\tfrac13, \tfrac13, \tfrac13)$, and the
+closer the point is to a corner, the more likely that class. The grid on the left is pushed through softmax and drawn on
+the right. The dashed lines are where two logits tie; they meet at the centre of each panel.
+
+<Widget src="simplex" height={500} caption="Drag the point in either panel." />
+
+- Drag the point far out on the left. On the right it crowds into a corner or an edge, but never touches one, however
+  far you go. Softmax maps the whole infinite plane into the open triangle.
+- Look at how the grid deforms. Near the centre the squares are nearly undistorted; softmax is roughly linear for small
+  logits. Far from the centre whole rows of squares get squashed into a sliver along an edge. Those are **saturated**
+  logits: big changes on the left barely move the probabilities on the right, which is why gradients through a confident
+  softmax get small.
+- Lower $T$. The point (and the grid) races towards the edges, because the same logits now count for more. Raise it and
+  everything collapses towards the centre.
+- Drag on the right to see the inverse. Any point inside the triangle comes from a line of logit vectors, $z_i = T \ln p_i + c$
+  for any $c$. The left panel shows the one with $c$ chosen so the logits sum to 0.
+
+With only two classes the triangle becomes a line segment, and softmax becomes something familiar:
+
+$$
+p_1 = \frac{e^{z_1}}{e^{z_1} + e^{z_2}} = \frac{1}{1 + e^{-(z_1 - z_2)}} = \sigma(z_1 - z_2)
+$$
+
+That's the logistic sigmoid of the logit difference. Softmax is the many-class version of logistic regression's sigmoid.
+
+## Why it trains nicely
+
+Softmax is almost always followed by the cross-entropy loss, $L = -\ln p_y$ for the correct class $y$. The derivative of
+softmax itself is
+
+$$
+\frac{\partial p_i}{\partial z_j} = p_i\,(\delta_{ij} - p_j)
+$$
+
+which shrinks when the distribution saturates, as the grid above suggests. But chain it through the loss and the
+logarithm undoes the exponential:
+
+$$
+\frac{\partial L}{\partial z_j} = p_j - [j = y]
+$$
+
+The gradient on each logit is just "what the model predicted minus what it should have predicted". If the model is
+confidently wrong, with $p_y$ near 0, the correct class still gets a gradient near $-1$ pulling it up. The saturation
+only bites when the model is already right.
+
+## Overflow, and subtracting the max
+
+The formula as written is a numerical trap. $e^{z}$ grows quickly: in float32 it overflows to infinity for any $z$ above
+about 88.7, and in float16 above about 11. Logits of 100 aren't unusual in practice, and once two of the $e^{z_i}$ are
+infinite the division is $\infty / \infty$, which is NaN. Very negative logits fail the other way: every $e^{z_i}$
+underflows to 0, and the result is $0/0$.
+
+The fix uses the shift invariance from earlier. Subtracting $\max_j z_j$ from every logit doesn't change the answer, and
+afterwards the largest exponent is exactly $e^0 = 1$. Nothing can overflow, the sum is at least 1 so it can't be 0, and
+the only things that underflow are probabilities too small to matter. Every real softmax implementation does this.
+
+The widget runs both versions with every operation rounded to the chosen format. Slide the shift $c$, which adds the
+same constant to all three logits, so the right answer never changes.
+
+<Widget src="stability" height={420} />
+
+- In float32, push $c$ past about 86. The naive version's largest $e^{z_i}$ becomes $\infty$ and its outputs turn into
+  NaN and 0. The right-hand column doesn't change.
+- Switch to float16. Now $c = 9$ is already enough. This is one reason mixed-precision training keeps the softmax in
+  float32, and why attention kernels are careful about where they do it.
+- Go negative. The naive sum underflows to 0, and $0/0$ is NaN again.
+- Try $c = 1000$ in float16. The stable version still gives finite answers, but they're slightly off: float16 values
+  near 1000 are spaced 0.5 apart, so the logit $1000.2$ is stored as $1000$ before softmax ever sees it. Subtracting
+  the max saves you from overflow, not from the precision you lost upstream.
+
+Libraries also offer a fused **log-softmax**, $z_i - \max z - \ln \sum_j e^{z_j - \max z}$, because taking $\ln$ of a
+probability that has already underflowed to 0 gives $-\infty$. Computing it from the logits directly avoids that.
+
+## In attention
+
+Softmax isn't only for classifiers. Every attention layer in a transformer turns query–key scores into weights with it:
+$\operatorname{softmax}(q \cdot k_j / \sqrt{d})$ over the keys $k_j$. The $\sqrt{d}$ is a temperature. Dot products of
+$d$-dimensional vectors grow like $\sqrt{d}$, and without the division the softmax would saturate, put almost all its
+weight on one key, and pass back vanishing gradients, exactly the corner-crowding in the triangle above. Fused
+attention kernels like FlashAttention compute it in blocks with a *running* max, rescaling the partial sums whenever a
+bigger score turns up, so they get the stable version without ever holding a whole row of scores at once.
