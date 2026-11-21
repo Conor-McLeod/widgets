@@ -1,0 +1,125 @@
+---
+title: Required utilisation
+summary: Why "the share of the time left that has to be work" swings hardest just when it looks safe, and why hours of slack make a steadier gauge.
+date: 2026-11-21
+tags: [productivity, scheduling, calculus]
+draft: true
+---
+
+Say it's noon, a goal has a 17:00 deadline, and you owe it an hour of work. You have five hours, and one of
+them has to be work, so you need to use 20% of your remaining time on it. That's the **required utilisation**:
+
+$$
+r = \frac{L}{T}
+$$
+
+where $L$ is the work left and $T$ is the time left until the deadline. Do nothing and $T$ shrinks while
+$L$ stays put. At 13:00 it's 25%, at 14:00 33%, at 15:00 50%, and at 16:00 100%.
+
+The point of tracking it is a fact about people rather than physics. Five hours of work in five hours is
+*possible*, but nobody keeps up 100%. Something like 70% is a more honest ceiling once you count switching,
+breaks and the things that come up. Call that ceiling $\theta$. As long as $r \le \theta$ you can still finish at
+a pace you can actually keep. Once $r > \theta$ you're relying on everything going to plan.
+
+So $r$ is a sensible thing to watch. But it has a nasty habit. Try the first schedule below, which is the
+one that prompted this page: do 50 of the 60 minutes straight away, then leave the last 10 minutes "for later".
+
+<Widget src="day" height={530} caption="Hover to read off any moment. Drag on the strip to paint or erase work; the presets redraw it." />
+
+Things to try:
+
+- **Most of it, then coast.** Required utilisation drops to single figures and stays low for hours. It looks completely safe.
+  Then it shoots up near the end: it passes 70% with about 15 minutes to go. The slack line underneath has been
+  falling steadily the whole time, and it hits zero at exactly that same moment. Nothing about the slack is a surprise.
+- **Wait, then flat out.** This is the plan your brain proposes ("I'll start at four"). It needs 100% from the
+  moment it starts, and the slack ran out at about 15:34, well before you begin.
+- **Little and often.** A steady trickle holds $r$ level at its starting 20%. Notice that the slack still falls.
+- **Make the window 12 hours** and the work due 2 hours. Every schedule now starts with lots of slack, and
+  you can see how much coasting that slack can absorb.
+
+## Why it swings: the $1/T$ in the denominator
+
+Suppose you spend a fraction $u$ of each passing hour on the goal. That's your actual, or **current**,
+utilisation. The work left falls at rate $u$ and the time left falls at rate 1:
+
+$$
+\frac{dL}{dt} = -u, \qquad \frac{dT}{dt} = -1
+$$
+
+Apply the quotient rule to $r = L/T$:
+
+$$
+\frac{dr}{dt} = \frac{-uT + L}{T^2} = \frac{r - u}{T}
+$$
+
+Two things come out of this.
+
+1. **The same $r$ moves at very different speeds.** When you're idle ($u = 0$), $r$ climbs at $r/T$ per
+   hour. At 16.7% with ten hours to go that's 1.7 points an hour. At 16.7% with one hour to go it's
+   16.7 points an hour. The number on the dial is the same, but the danger isn't.
+2. **What matters is how your current utilisation compares with $r$.** If $u > r$, $r$ falls. If $u < r$, it
+   rises. Showing current utilisation next to required utilisation tells you which way you're heading, which
+   the required figure alone can't.
+
+Here are three goals that all read the same required utilisation right now, with deadlines 1, 4 and
+10 hours away. Then you stop working on all three.
+
+<Widget src="same-ratio" height={420} caption="Each dot is where that goal's required utilisation passes $\theta$. Its distance from 0 is the goal's slack." />
+
+With $u = 0$ the work left is fixed, so $r$ traces a hyperbola, $r(t) = L / (T_0 - t)$, which runs off to
+infinity at the deadline. The three curves start at the same height, but the 1-hour goal runs out of slack ten times
+sooner than the 10-hour one. A ratio throws away scale, and scale is exactly what decides how much trouble you're in.
+
+## Holding steady is balancing on a knife-edge
+
+Integrate $dr/dt$ at a constant pace $u$ and the solution has a neat closed form:
+
+$$
+r(T) = u + (r_0 - u)\,\frac{T_0}{T}
+$$
+
+The gap between $r$ and $u$ grows like $1/T$ as the deadline gets closer. The level line $r = u$ is an
+**unstable** equilibrium. Start just below your pace and you finish early. Start just above it and the gap
+compounds until it's beyond 100%. No start drifts back to the line on its own.
+
+<Widget src="fan" height={370} caption="Nine goals, all due in 8 hours, starting at required utilisations from 10% to 90%, all worked at the same pace $u$." />
+
+Slide $u$ and watch the fan pivot about the dashed line. Then switch to **slack**. It's the same nine goals,
+but now every line is straight and they're all parallel.
+
+## Slack: the same information, in hours
+
+The slack is how long you could stop working before the pace you'd need passes $\theta$:
+
+$$
+S = T - \frac{L}{\theta} = T\left(1 - \frac{r}{\theta}\right)
+$$
+
+It holds exactly what $r$ holds, multiplied by $T$, so the scale is back. And its dynamics are dull, which is what you want from a gauge:
+
+$$
+\frac{dS}{dt} = \frac{u}{\theta} - 1
+$$
+
+There's no $T$ in that, so nothing speeds up as the deadline closes in.
+
+- **When you're idle you lose exactly one hour of slack per hour.** That's true at noon and at 16:50 alike,
+  so the danger the first widget shows can't sneak up on you.
+- **Slack is in the units disruptions come in.** Dinner takes an hour and a half, not 12%. "I have 2h40
+  of slack" answers the real question directly: how big a surprise can I absorb?
+- **Working below $\theta$ still burns slack.** It only grows while you work faster than $\theta$. Even at 100% you
+  earn just $1/\theta - 1 \approx 0.43$ hours per hour. The way to build slack is the dull one: start early.
+
+$r$ and $S$ always agree at the boundary ($S = 0$ exactly when $r = \theta$). Neither is wrong. $r$ is a decent gauge of how hard you have to work from now on. $S$ is the honest gauge of how safe you are.
+
+## What this leaves out
+
+- **Not every hour is available.** $T$ above is wall-clock time, so it counts sleep, meals and appointments.
+  At 22:00, with 3 hours due by 17:00 tomorrow, $r = 3/19 \approx 16\%$. Take out 8 hours of sleep and it's
+  $3/11 \approx 27\%$. The ceiling $\theta$ only makes sense against hours you could actually work.
+- **Disruptions grow with $T$.** If a fifth of your waking time tends to get taken by things you didn't plan
+  for, fold that into the ceiling: $\theta \approx 0.7 \times 0.8 = 0.56$.
+- **Several goals share the same hours.** Working towards a later deadline also has to cover the earlier ones, so
+  each deadline's $L$ is everything due by then. You can finish everything at pace $\theta$ exactly when
+  every $S \ge 0$, which is the same as every $r \le \theta$. But to pick which deadline is *most* at risk, rank
+  by the smallest $S$, not the largest $r$.
