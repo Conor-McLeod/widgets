@@ -1,5 +1,5 @@
 // Vanilla widget: a d = 16 sinusoidal positional encoding drawn as 8 clock hands, one per
-// (sin, cos) pair. Hand i sits at angle p·ω_i, so the fast hands spin and the slow ones barely move.
+// (cos, sin) pair. Hand i sits at angle p·ω_i (anticlockwise from 3 o'clock), so the fast hands spin and the slow ones barely move.
 // An optional offset k draws a ghost hand at p + k; the arc between them is k·ω_i whatever p is.
 import type { Mount } from '~/widget';
 import { svgLabel, tex } from '~/math/tex';
@@ -64,15 +64,16 @@ export const mount: Mount = (el) => {
   let raf = 0;
   let last = 0;
 
-  // Angle measured clockwise from 12 o'clock, so the hand's tip is (sin θ, cos θ) = (PE_2i, PE_2i+1).
-  const tip = (cx: number, cy: number, r: number, a: number) => [cx + r * Math.sin(a), cy - r * Math.cos(a)];
+  // Angle measured anticlockwise from 3 o'clock, so the hand's tip is (cos θ, sin θ) = (PE_2i+1, PE_2i).
+  // SVG's y axis points down, hence the minus.
+  const tip = (cx: number, cy: number, r: number, a: number) => [cx + r * Math.cos(a), cy - r * Math.sin(a)];
 
   function arc(cx: number, cy: number, r: number, a0: number, delta: number) {
     const d = ((delta % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
     if (d < 1e-3) return '';
     const [x0, y0] = tip(cx, cy, r, a0);
     const [x1, y1] = tip(cx, cy, r, a0 + d);
-    return `<path d="M${x0} ${y0} A${r} ${r} 0 ${d > Math.PI ? 1 : 0} 1 ${x1} ${y1}" fill="none"
+    return `<path d="M${x0} ${y0} A${r} ${r} 0 ${d > Math.PI ? 1 : 0} 0 ${x1} ${y1}" fill="none"
       stroke="var(--danger)" stroke-width="3" stroke-linecap="round" opacity=".8" />`;
   }
 
@@ -123,7 +124,7 @@ export const mount: Mount = (el) => {
       const sub =
         k > 0
           ? `k\\omega_{${i}} = ${deg >= 360 ? `${(deg / 360).toFixed(1)}\\text{ turns}` : `${deg.toFixed(deg < 10 ? 1 : 0)}^\\circ`}`
-          : `(${fmt(Math.sin(a))},\\ ${fmt(Math.cos(a))})`;
+          : `(${fmt(Math.cos(a))},\\ ${fmt(Math.sin(a))})`;
       parts.push(
         svgLabel(cx, oy + 156, tex(sub), {
           anchor: 'middle',
